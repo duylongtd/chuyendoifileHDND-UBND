@@ -28,7 +28,8 @@ zo, zh, zu = (zipfile.ZipFile(p) for p in (orig_p, hd_p, ub_p))
 for z, lab in ((zh, "HĐND"), (zu, "UBND")):
     check(z.testzip() is None, f"{lab}: zip toàn vẹn (CRC mọi thành phần)")
     names_o = {i.filename: i for i in zo.infolist()}; names_n = {i.filename: i for i in z.infolist()}
-    check(set(names_o) - set(names_n) == {"xl/calcChain.xml"} and not (set(names_n) - set(names_o)), f"{lab}: đủ thành phần, chỉ bỏ calcChain")
+    # file gốc có thể không có calcChain (tùy phần mềm lưu) -> chỉ cho phép thiếu đúng thành phần đó
+    check(set(names_o) - set(names_n) <= {"xl/calcChain.xml"} and not (set(names_n) - set(names_o)), f"{lab}: đủ thành phần (chỉ được bỏ calcChain nếu có)")
     changed = sorted(n for n in names_n if names_n[n].CRC != names_o[n].CRC)
     print(f"       {lab}: {len(names_n) - len(changed)} thành phần giữ nguyên, {len(changed)} thành phần viết lại: {[c.split('/')[-1] for c in changed]}")
     wbx = z.read("xl/workbook.xml").decode(); check('fullCalcOnLoad="1"' in wbx, f"{lab}: bật tính lại công thức khi mở")
