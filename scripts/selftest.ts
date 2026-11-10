@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { orgFromAgency, outputFileName, suggestOrg } from "../lib/xlsx/classify";
 import { translateFormula } from "../lib/xlsx/formula";
 import { escapeFormula, unescapeFormula } from "../lib/xlsx/xml";
-import { uploadFile } from "../lib/client/upload";
+import { ApiError, uploadFile, type SendHooks, type UploadOptions } from "../lib/client/upload";
 
 let n = 0;
 const eq = (a: unknown, b: unknown, msg = "") => {
@@ -69,52 +69,105 @@ eq(outputFileName("UBND và HĐND xã B.xlsx", "HDND"), "HĐND xã B.xlsx");
 eq(outputFileName("Bo bieu xa C.xlsx", "HDND"), "Bo bieu xa C - HĐND.xlsx");
 eq(outputFileName('a/b:c*"?.xlsx', "UBND"), "a_b_c___ - UBND.xlsx", "ký tự không hợp lệ trong tên file");
 
-// --- Tải lên: tự chuyển sang phần nhỏ hơn khi mạng chặn/rớt gói lớn ---
+// --- Tải lên: tự chuyển sang phần nhỏ hơn khi mạng chặn/rớt gói lớn, mạng chậm, mạng đứng ---
 async function uploadTests() {
   const file = new File([new Uint8Array(9 * 1024 * 1024 + 123)], "a.xlsx");
-  const PART = 4 * 1024 * 1024;
-  const run = async (maxOkBytes: number, failStatus: number | null) => {
-    const calls: { part: number; total: number; size: number; ok: boolean }[] = [];
+  const MB = 1024 * 1024;
+  const PART = 4 * MB;
+  type Call = { part: number; total: number; size: number; ok: boolean };
+  const run = async (send: (c: Call, hooks: SendHooks) => Promise<void>, extra: UploadOptions = {}) => {
+    const calls: Call[] = [];
     const notes: string[] = [];
-    globalThis.fetch = (async (url: string, init: RequestInit) => {
-      const q = new URL(url, "http://x").searchParams;
-      const size = (init.body as Blob).size;
-      const ok = size <= maxOkBytes;
-      calls.push({ part: Number(q.get("part")), total: Number(q.get("total")), size, ok });
-      if (!ok && failStatus === null) throw new TypeError("Failed to fetch");
-      return new Response(JSON.stringify(ok ? { ok: true } : { error: { message: "lỗi máy chủ" } }), { status: ok ? 200 : failStatus! });
-    }) as typeof fetch;
     let result: { parts: number } | null = null;
     let error: Error | null = null;
     try {
-      result = await uploadFile("job", file, PART, () => {}, (x) => x && notes.push(x), 1);
+      result = await uploadFile("job", file, PART, () => {}, (x) => x && notes.push(x), {
+        retryDelayMs: 1,
+        ...extra,
+        send: async (url, chunk, hooks) => {
+          const q = new URL(url, "http://x").searchParams;
+          const c: Call = { part: Number(q.get("part")), total: Number(q.get("total")), size: chunk.size, ok: false };
+          calls.push(c);
+          await send(c, hooks);
+          c.ok = true;
+        },
+      });
     } catch (e) {
       error = e as Error;
     }
     return { calls, notes, result, error };
   };
+  const failAbove = (maxOk: number, status: number) => async (c: Call) => {
+    if (c.size > maxOk) throw new ApiError("lỗi", status);
+  };
   // mạng tốt: 3 phần 4 MB, không ghi chú
-  let r = await run(Infinity, null);
+  let r = await run(async () => {});
   eq(r.result?.parts, 3, "mạng tốt: 3 phần 4 MB");
   eq(r.calls.length, 3);
   eq(r.notes.length, 0);
   // mạng rớt mọi gói > 1,5 MB: phải tự hạ xuống 1 MB và thành công, gửi đủ mọi byte
-  r = await run(1.5 * 1024 * 1024, null);
+  r = await run(failAbove(1.5 * MB, 0));
   eq(r.result?.parts, 10, "mạng chặn gói lớn: tự chuyển sang 10 phần 1 MB");
   const okParts = r.calls.filter((c) => c.ok && c.total === 10);
   eq(okParts.map((c) => c.part).sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "đủ 10 phần, không thiếu phần nào");
   eq(okParts.reduce((s, c) => s + c.size, 0), file.size, "tổng byte gửi đi bằng đúng kích thước file");
   eq(r.notes.length > 0, true, "có thông báo đang tải lại với phần nhỏ hơn");
   // máy chủ trả 503 với gói > 2,5 MB: hạ xuống 2 MB là đủ
-  r = await run(2.5 * 1024 * 1024, 503);
+  r = await run(failAbove(2.5 * MB, 503));
   eq(r.result?.parts, 5, "lỗi 5xx với gói lớn: chuyển sang 5 phần 2 MB");
   // mạng chết hẳn: báo lỗi rõ, không treo
-  r = await run(0, null);
+  r = await run(failAbove(0, 0));
   eq(r.result, null);
   eq(/Tải lại file này/.test(r.error?.message ?? ""), true, "mạng chết: thông báo hướng dẫn bấm Tải lại");
   // lỗi do dữ liệu (4xx): dừng ngay, không thử lại vô ích
-  r = await run(0, 409);
+  r = await run(failAbove(0, 409));
   eq(r.calls.length <= 4, true, "lỗi 4xx: không thử lại (" + r.calls.length + " lần gọi)");
+
+  // Bộ gửi giả lập đường truyền có tốc độ: đẩy byte dần, bị hủy thì báo lỗi mạng
+  const paced = (bytesPerMs: (c: Call) => number) => (c: Call, h: SendHooks) =>
+    new Promise<void>((resolve, reject) => {
+      let loaded = 0;
+      const t = setInterval(() => {
+        loaded = Math.min(c.size, loaded + bytesPerMs(c) * 5);
+        if (loaded > 0) h.onBytes(loaded);
+        if (loaded >= c.size) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 5);
+      h.signal.addEventListener("abort", () => {
+        clearInterval(t);
+        reject(new ApiError("hủy", 0));
+      });
+    });
+  const fast = { tickMs: 5, slowCheckMs: 40, stallMs: 80, responseWaitMs: 80 };
+  // mạng đứng với gói > 1,5 MB (không đẩy được byte nào): không treo, tự xuống 1 MB
+  let t0 = Date.now();
+  r = await run(paced((c) => (c.size > 1.5 * MB ? 0 : MB)), fast);
+  eq(r.result?.parts, 10, "đường truyền đứng với gói lớn: xuống 10 phần 1 MB");
+  eq(Date.now() - t0 < 3000, true, "phát hiện đứng nhanh, không chờ hết thời gian của máy chủ");
+  eq(r.notes.some((x) => /bị đứng/.test(x)), true, "có thông báo đường truyền bị đứng");
+  eq(r.calls.filter((c) => c.total === 3).length <= 4, true, "mức 4 MB chỉ thử một lượt rồi bỏ");
+  // mạng chậm đều: 4 MB × 4 ước tính quá lâu -> nhảy thẳng xuống mức đủ nhanh, bỏ qua mức 2 MB
+  r = await run(paced((c) => (c.total === 3 ? 400 : 50000)), { ...fast, slowPartSec: 3, targetPartSec: 1, stallMs: 5000, responseWaitMs: 5000 });
+  eq(r.notes.some((x) => /chậm/.test(x)), true, "mạng chậm: có thông báo kèm tốc độ");
+  eq(r.calls.some((c) => c.total === 5), false, "mạng chậm: bỏ qua mức 2 MB, xuống thẳng mức phù hợp");
+  eq(r.result !== null && r.calls.filter((c) => c.ok).reduce((s, c) => s + c.size, 0) >= file.size, true, "mạng chậm: vẫn tải xong đủ byte");
+  // mức cuối cùng mà một phần bị đứng: chỉ thử lại phần đó, không bỏ cuộc
+  let stuckOnce = true;
+  r = await run(
+    (c, h) => {
+      if (c.total !== 19) return Promise.reject(new ApiError("lỗi", 0));
+      if (c.part === 7 && stuckOnce) {
+        stuckOnce = false;
+        return paced(() => 0)(c, h);
+      }
+      return Promise.resolve();
+    },
+    { ...fast, attempts: 2 },
+  );
+  eq(r.result?.parts, 19, "mức 512 KB: phần bị đứng được thử lại và tải xong");
+  eq(r.calls.filter((c) => c.total === 19 && c.part === 7).length, 2, "chỉ gửi lại đúng phần bị đứng");
 }
 
 uploadTests()

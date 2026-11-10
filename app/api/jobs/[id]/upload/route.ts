@@ -6,7 +6,8 @@ import { fail, json, route } from "@/lib/server/http";
 import { loadJob, partFile } from "@/lib/server/jobs";
 import { putObject } from "@/lib/server/storage";
 
-export const maxDuration = 120;
+// Mạng rất chậm vẫn được phép đẩy xong một phần; việc phát hiện đường truyền đứng do trình duyệt đảm nhận.
+export const maxDuration = 300;
 type Ctx = { params: Promise<{ id: string }> };
 
 export const PUT = route(async (req: Request, ctx: Ctx) => {

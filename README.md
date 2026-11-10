@@ -61,8 +61,8 @@ Trình duyệt ──(từng phần 4 MB)──▶ /api/jobs/:id/upload ──�
 
 - **Next.js (App Router, TypeScript)**: giao diện + API.
 - **Vercel Blob (private)**: file gốc, file kết quả và trạng thái tác vụ (`job.json`). Không cần cơ sở dữ liệu.
-- **Tải lên theo từng phần 4 MB**, gửi song song 4 phần một lúc qua API của hệ thống (Vercel giới hạn 4,5 MB mỗi request). Cách này chạy được với mọi kiểu xác thực của Blob (`BLOB_READ_WRITE_TOKEN` hoặc OIDC của store Private); mỗi phần tự thử lại 3 lần khi rớt mạng.
-- **Mạng yếu**: nếu vẫn lỗi đường truyền sau khi thử lại, trình duyệt tự tải lại cả file với phần nhỏ hơn và ít luồng hơn (4 MB × 4 luồng → 2 MB × 2 → 1 MB × 1); thất bại hẳn thì hiện nút "Tải lại file này" (không phải chọn lại file).
+- **Tải lên theo từng phần 4 MB**, gửi song song 4 phần một lúc qua API của hệ thống (Vercel giới hạn 4,5 MB mỗi request). Cách này chạy được với mọi kiểu xác thực của Blob (`BLOB_READ_WRITE_TOKEN` hoặc OIDC của store Private); mỗi phần tự thử lại 4 lần khi rớt mạng.
+- **Mạng chậm hoặc chập chờn**: trình duyệt đo số byte thực sự đẩy lên được. Ước tính một phần mất hơn 90 giây thì chuyển thẳng xuống mức đủ nhanh; 30 giây không đẩy thêm được byte nào thì coi là đường truyền đứng và xuống mức kế tiếp (4 MB × 4 luồng → 2 MB × 2 → 1 MB × 1 → 512 KB × 1). Thất bại hẳn thì hiện nút "Tải lại file này" (không phải chọn lại file).
 - **Toàn vẹn file tải lên**: trình duyệt tính SHA-256 của file gốc; máy chủ ghép các phần rồi đối chiếu số phần, kích thước và SHA-256 trước khi đọc vị trí và trước khi tách. Lệch một bit cũng bị từ chối và yêu cầu tải lại.
 - **Vercel Queues**: mỗi file là một thông điệp; lỗi hệ thống thì hàng đợi tự giao lại. Nếu Queues chưa bật hoặc gửi lỗi, hệ thống tự chuyển sang chạy nền trong function (`after()`), nên vẫn hoạt động.
 - **Mỗi instance chỉ tách 1 file tại một thời điểm** (các file khác xếp hàng) để không tràn bộ nhớ.
