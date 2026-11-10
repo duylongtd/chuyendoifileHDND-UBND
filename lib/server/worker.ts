@@ -2,8 +2,8 @@
 import { Org, outputFileName } from "../xlsx/classify";
 import { SplitError, splitWorkbook } from "../xlsx/split";
 import { LIMITS, XLSX_MIME } from "./config";
-import { inputFile, loadJob, outputFile, saveJob } from "./jobs";
-import { getObject, putObject } from "./storage";
+import { AssembleError, loadJob, outputFile, readInput, saveJob } from "./jobs";
+import { putObject } from "./storage";
 
 /** Ném ra khi cần hàng đợi giao lại thông điệp sau (không phải lỗi dữ liệu). */
 export class RetryLater extends Error {}
@@ -40,14 +40,20 @@ async function doProcess(id: string): Promise<void> {
 
   const started = Date.now();
   try {
-    const input = await getObject(inputFile(id));
+    let input: Buffer | null;
+    try {
+      // Đối chiếu lại số phần, kích thước và SHA-256 trước khi tách
+      input = await readInput(id, { parts: job.parts, size: job.size, sha256: job.sha256, maxBytes: LIMITS.maxFileBytes });
+    } catch (e) {
+      if (e instanceof AssembleError) throw new SplitError("INVALID_FILE", e.message);
+      throw e;
+    }
     if (!input) throw new SplitError("INVALID_FILE", "Không tìm thấy file đã tải lên (có thể đã quá 24 giờ và bị xóa). Hãy tải lại file.");
     const result = await splitWorkbook(input, job.mapping ?? {});
     const outputs = {} as Record<Org, { name: string; size: number }>;
-    for (const org of ["HDND", "UBND"] as Org[]) {
-      await putObject(outputFile(id, org), result.files[org], XLSX_MIME);
-      outputs[org] = { name: outputFileName(job.fileName, org), size: result.files[org].length };
-    }
+    const orgs = ["HDND", "UBND"] as Org[];
+    await Promise.all(orgs.map((org) => putObject(outputFile(id, org), result.files[org], XLSX_MIME)));
+    for (const org of orgs) outputs[org] = { name: outputFileName(job.fileName, org), size: result.files[org].length };
     const latest = (await loadJob(id)) ?? job;
     latest.status = "done";
     latest.attempts = job.attempts;

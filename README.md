@@ -48,7 +48,7 @@ Sửa trong [`lib/server/config.ts`](lib/server/config.ts).
 
 ```
 Trình duyệt ──(từng phần 4 MB)──▶ /api/jobs/:id/upload ──▶ Vercel Blob (private)
-     │                              ▲   │        jobs/<id>/parts/0000… → input.xlsx
+     │                              ▲   │        jobs/<id>/parts/0000, 0001, …
      │ POST /api/jobs/:id/inspect   │   │ đọc file
      │ POST /api/jobs/:id/split ────┼───┼──▶ Vercel Queues (topic split-jobs)
      │                              │   ▼            │ giao lại khi lỗi
@@ -59,7 +59,8 @@ Trình duyệt ──(từng phần 4 MB)──▶ /api/jobs/:id/upload ──�
 
 - **Next.js (App Router, TypeScript)**: giao diện + API.
 - **Vercel Blob (private)**: file gốc, file kết quả và trạng thái tác vụ (`job.json`). Không cần cơ sở dữ liệu.
-- **Tải lên theo từng phần 4 MB** qua API của hệ thống (Vercel giới hạn 4,5 MB mỗi request), server ghép lại thành file gốc. Cách này chạy được với mọi kiểu xác thực của Blob (`BLOB_READ_WRITE_TOKEN` hoặc OIDC của store Private); mỗi phần tự thử lại 3 lần khi rớt mạng.
+- **Tải lên theo từng phần 4 MB**, gửi song song 4 phần một lúc qua API của hệ thống (Vercel giới hạn 4,5 MB mỗi request). Cách này chạy được với mọi kiểu xác thực của Blob (`BLOB_READ_WRITE_TOKEN` hoặc OIDC của store Private); mỗi phần tự thử lại 3 lần khi rớt mạng.
+- **Toàn vẹn file tải lên**: trình duyệt tính SHA-256 của file gốc; máy chủ ghép các phần rồi đối chiếu số phần, kích thước và SHA-256 trước khi đọc vị trí và trước khi tách. Lệch một bit cũng bị từ chối và yêu cầu tải lại.
 - **Vercel Queues**: mỗi file là một thông điệp; lỗi hệ thống thì hàng đợi tự giao lại. Nếu Queues chưa bật hoặc gửi lỗi, hệ thống tự chuyển sang chạy nền trong function (`after()`), nên vẫn hoạt động.
 - **Mỗi instance chỉ tách 1 file tại một thời điểm** (các file khác xếp hàng) để không tràn bộ nhớ.
 - **Cron** hằng ngày xóa tác vụ quá 24 giờ.

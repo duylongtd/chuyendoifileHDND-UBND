@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import type { Org } from "../xlsx/classify";
 import type { PositionInfo, SplitReport } from "../xlsx/split";
-import { deleteObjects, deletePrefix, getObject, listObjects, putObject } from "./storage";
+import { deletePrefix, getObject, listObjects, putObject } from "./storage";
 
 export type JobStatus = "created" | "ready" | "queued" | "processing" | "done" | "error";
 
@@ -16,6 +16,9 @@ export interface Job {
   attempts: number;
   positions?: PositionInfo[];
   missingSheets?: string[];
+  /** Thông tin để đối chiếu toàn vẹn file tải lên */
+  parts?: number;
+  sha256?: string;
   mapping?: Record<string, Org>;
   error?: { code: string; message: string };
   report?: SplitReport;
@@ -65,30 +68,56 @@ export async function deleteJob(id: string): Promise<void> {
 
 export class AssembleError extends Error {}
 
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i], i);
+      }
+    }),
+  );
+  return out;
+}
+
+export interface InputCheck {
+  /** Số phần trình duyệt đã gửi */
+  parts?: number;
+  /** Kích thước file gốc (byte) */
+  size?: number;
+  /** SHA-256 (hex) của file gốc, do trình duyệt tính trước khi cắt */
+  sha256?: string;
+  maxBytes: number;
+}
+
 /**
- * Ghép các phần đã tải lên thành jobs/<id>/input.xlsx (một lần), rồi xóa các phần.
- * Trả về nội dung file; nếu đã ghép từ trước thì đọc lại file đã ghép.
+ * Đọc file gốc từ các phần đã tải lên (đọc song song, ghép trong bộ nhớ; không ghi lại thành file mới),
+ * rồi đối chiếu số phần, kích thước và SHA-256 với file trên máy người dùng để bảo đảm toàn vẹn.
+ * Trả về null nếu chưa có phần nào.
  */
-export async function assembleInput(id: string, expectedParts: number | undefined, maxBytes: number): Promise<Buffer | null> {
-  const existing = await getObject(inputFile(id));
-  if (existing) return existing;
-  const parts = (await listObjects(partsPrefix(id))).sort((a, b) => a.path.localeCompare(b.path));
-  if (!parts.length) return null;
-  if (expectedParts && parts.length !== expectedParts) {
-    throw new AssembleError(`File tải lên chưa đủ (nhận ${parts.length}/${expectedParts} phần). Hãy tải lại.`);
+export async function readInput(id: string, check: InputCheck): Promise<Buffer | null> {
+  let n = check.parts;
+  if (!n) {
+    // Không biết số phần (tác vụ cũ): dò trong kho
+    const legacy = await getObject(inputFile(id));
+    if (legacy) return legacy;
+    n = (await listObjects(partsPrefix(id))).length;
+    if (!n) return null;
   }
-  for (let i = 0; i < parts.length; i++) {
-    if (parts[i].path !== partFile(id, i)) throw new AssembleError("File tải lên bị thiếu phần ở giữa. Hãy tải lại.");
+  const bufs = await mapLimit(Array.from({ length: n }, (_, i) => i), 6, (i) => getObject(partFile(id, i)));
+  const have = bufs.filter(Boolean).length;
+  if (!have) return null;
+  if (have !== n) throw new AssembleError(`File tải lên chưa đủ (nhận ${have}/${n} phần). Hãy tải lại.`);
+  const total = bufs.reduce((sum, b) => sum + b!.length, 0);
+  if (total > check.maxBytes) throw new AssembleError(`File vượt ${Math.floor(check.maxBytes / 1048576)} MB.`);
+  const whole = Buffer.concat(bufs as Buffer[], total);
+  if (check.size && whole.length !== check.size) {
+    throw new AssembleError("File nhận được không đủ dung lượng so với file gốc (lỗi đường truyền). Hãy tải lại.");
   }
-  if (parts.reduce((n, p) => n + p.size, 0) > maxBytes) throw new AssembleError(`File vượt ${Math.floor(maxBytes / 1048576)} MB.`);
-  const bufs: Buffer[] = [];
-  for (const p of parts) {
-    const b = await getObject(p.path);
-    if (!b) throw new AssembleError("Không đọc được một phần của file vừa tải lên. Hãy tải lại.");
-    bufs.push(b);
+  if (check.sha256 && crypto.createHash("sha256").update(whole).digest("hex") !== check.sha256.toLowerCase()) {
+    throw new AssembleError("File nhận được không khớp với file gốc (lỗi đường truyền). Hãy tải lại.");
   }
-  const whole = Buffer.concat(bufs);
-  await putObject(inputFile(id), whole, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  await deleteObjects(parts.map((p) => p.path)).catch(() => {});
   return whole;
 }

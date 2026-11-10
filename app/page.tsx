@@ -90,27 +90,50 @@ function mappingOf(job: Job): Record<string, Org> {
   return m;
 }
 
+async function sha256Hex(file: File): Promise<string | undefined> {
+  // crypto.subtle chỉ có trên https / localhost; thiếu thì bỏ qua (máy chủ vẫn đối chiếu số phần và kích thước)
+  if (!globalThis.crypto?.subtle) return undefined;
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const UPLOAD_CONCURRENCY = 4;
+
 /**
- * Tải file lên theo từng phần nhỏ qua API của hệ thống (mỗi phần dưới giới hạn 4,5 MB của máy chủ).
- * Mỗi phần tự thử lại tối đa 3 lần khi rớt mạng. Trả về số phần đã gửi.
+ * Tải file lên theo từng phần nhỏ qua API của hệ thống (mỗi phần dưới giới hạn 4,5 MB của máy chủ),
+ * gửi SONG SONG nhiều phần cùng lúc. Mỗi phần tự thử lại tối đa 3 lần khi rớt mạng.
+ * Trả về số phần và mã SHA-256 của file gốc để máy chủ đối chiếu toàn vẹn.
  */
-async function uploadFile(jobId: string, file: File, partBytes: number, onProgress: (pct: number) => void): Promise<number> {
+async function uploadFile(jobId: string, file: File, partBytes: number, onProgress: (pct: number) => void): Promise<{ parts: number; sha256?: string }> {
   const total = Math.max(1, Math.ceil(file.size / partBytes));
-  for (let i = 0; i < total; i++) {
-    const chunk = file.slice(i * partBytes, (i + 1) * partBytes);
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await api(`/api/jobs/${jobId}/upload?part=${i}&total=${total}`, { method: "PUT", body: chunk, headers: { "Content-Type": "application/octet-stream" } });
-        break;
-      } catch (e) {
-        const retryable = e instanceof ApiError && (e.status === 0 || e.status >= 500);
-        if (!retryable || attempt >= 3) throw e;
-        await new Promise((r) => setTimeout(r, 1200 * attempt));
+  const hashing = sha256Hex(file);
+  let next = 0;
+  let sent = 0;
+  let failed: unknown = null;
+  const worker = async () => {
+    while (next < total && !failed) {
+      const i = next++;
+      const chunk = file.slice(i * partBytes, (i + 1) * partBytes);
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await api(`/api/jobs/${jobId}/upload?part=${i}&total=${total}`, { method: "PUT", body: chunk, headers: { "Content-Type": "application/octet-stream" } });
+          break;
+        } catch (e) {
+          const retryable = e instanceof ApiError && (e.status === 0 || e.status >= 500);
+          if (!retryable || attempt >= 3) {
+            failed = e;
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 1200 * attempt));
+        }
       }
+      sent += chunk.size;
+      onProgress((sent / Math.max(1, file.size)) * 100);
     }
-    onProgress(((i + 1) / total) * 100);
-  }
-  return total;
+  };
+  await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, worker));
+  if (failed) throw failed;
+  return { parts: total, sha256: await hashing };
 }
 
 export default function Page() {
@@ -321,9 +344,9 @@ function Workspace({ limits, onUnauthorized }: { limits: Limits; onUnauthorized:
       for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
         try {
-          const parts = await uploadFile(job.id, files[i], limits.partBytes, (pct) => patch(job.id, { progress: Math.round(pct) }));
+          const up = await uploadFile(job.id, files[i], limits.partBytes, (pct) => patch(job.id, { progress: Math.round(pct) }));
           patch(job.id, { phase: "inspecting", progress: 100 });
-          const r = await api<{ job: Job }>(`/api/jobs/${job.id}/inspect`, { method: "POST", body: JSON.stringify({ parts }) });
+          const r = await api<{ job: Job }>(`/api/jobs/${job.id}/inspect`, { method: "POST", body: JSON.stringify(up) });
           patch(job.id, { phase: "confirm", job: r.job, mapping: mappingOf(r.job) });
         } catch (e) {
           patch(job.id, { phase: "error", error: handleError(e) });

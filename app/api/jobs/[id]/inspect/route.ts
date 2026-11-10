@@ -1,7 +1,7 @@
 // Đọc danh sách vị trí ở biểu C1 và gợi ý HĐND/UBND để người dùng xác nhận trước khi tách.
 import { LIMITS } from "@/lib/server/config";
 import { fail, json, route } from "@/lib/server/http";
-import { assembleInput, AssembleError, loadJob, saveJob } from "@/lib/server/jobs";
+import { AssembleError, loadJob, readInput, saveJob } from "@/lib/server/jobs";
 import { inspectWorkbook, SplitError } from "@/lib/xlsx/split";
 
 export const maxDuration = 120;
@@ -19,11 +19,12 @@ export const POST = route(async (req: Request, ctx: Ctx) => {
     return json({ job, error: job.error }, status);
   };
 
-  const body = (await req.json().catch(() => null)) as { parts?: unknown } | null;
-  const expected = Number.isInteger(body?.parts) ? (body!.parts as number) : undefined;
+  const body = (await req.json().catch(() => null)) as { parts?: unknown; sha256?: unknown } | null;
+  if (Number.isInteger(body?.parts)) job.parts = body!.parts as number;
+  if (typeof body?.sha256 === "string" && /^[0-9a-f]{64}$/i.test(body.sha256)) job.sha256 = body.sha256.toLowerCase();
   let input: Buffer | null;
   try {
-    input = await assembleInput(job.id, expected, LIMITS.maxFileBytes);
+    input = await readInput(job.id, { parts: job.parts, size: job.size, sha256: job.sha256, maxBytes: LIMITS.maxFileBytes });
   } catch (e) {
     if (e instanceof AssembleError) return reject("BAD_UPLOAD", e.message);
     throw e;
