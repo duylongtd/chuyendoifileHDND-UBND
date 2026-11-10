@@ -188,7 +188,67 @@ export default function Page() {
         {authed === false && <Login onDone={refreshSession} />}
         {authed && <Workspace limits={limits} onUnauthorized={() => setAuthed(false)} />}
       </main>
+      <SupportCorner />
     </>
+  );
+}
+
+const SUPPORT = {
+  groupUrl: "https://zalo.me/g/ygtptmrczdamvwrfoxgh",
+  personalUrl: "https://zalo.me/0965186137",
+  phone: "0965 186 137",
+  name: "Trần Đình Duy Long",
+  title: "Chuyên viên CNTT ĐHTM, KHCN và ĐMST",
+};
+
+/** Khung hỗ trợ nghiệp vụ ở góc trái dưới: nhóm Zalo (bấm hoặc quét QR) và nhắn riêng. */
+function SupportCorner() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  return (
+    <aside className="support" aria-label="Hỗ trợ nghiệp vụ">
+      {open && (
+        <div className="support-card" id="support-card">
+          <div className="row between">
+            <strong>Hỗ trợ nghiệp vụ</strong>
+            <button className="btn ghost sm" onClick={() => setOpen(false)} aria-label="Đóng khung hỗ trợ">
+              Đóng
+            </button>
+          </div>
+          <p className="small muted" style={{ margin: "4px 0 10px" }}>
+            Gặp lỗi khi tách file? Vào nhóm Zalo để được hỗ trợ.
+          </p>
+          <a className="support-qr" href={SUPPORT.groupUrl} target="_blank" rel="noopener noreferrer" aria-label="Mở nhóm Zalo hỗ trợ">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/zalo-nhom-ho-tro.svg" alt="Mã QR vào nhóm Zalo hỗ trợ" width={168} height={168} />
+          </a>
+          <p className="small muted" style={{ margin: "6px 0 10px", textAlign: "center" }}>
+            Quét mã bằng Zalo, hoặc bấm nút bên dưới
+          </p>
+          <a className="btn primary support-btn" href={SUPPORT.groupUrl} target="_blank" rel="noopener noreferrer">
+            Vào nhóm Zalo hỗ trợ
+          </a>
+          <a className="btn support-btn" href={SUPPORT.personalUrl} target="_blank" rel="noopener noreferrer">
+            <span>
+              Nhắn Zalo riêng <span className="nowrap">{SUPPORT.phone}</span>
+            </span>
+          </a>
+          <p className="support-who">
+            <b>{SUPPORT.name}</b>
+            <br />
+            {SUPPORT.title}
+          </p>
+        </div>
+      )}
+      <button className="support-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls="support-card">
+        <span aria-hidden>💬</span> Hỗ trợ
+      </button>
+    </aside>
   );
 }
 
