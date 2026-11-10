@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app/api/queues/split/route.ts": {
+      "maxDuration": 300,
+      "experimentalTriggers": [{ "type": "queue/v2beta", "topic": "split-jobs", "retryAfterSeconds": 30 }]
+    }
+  },
+  "crons": [{ "path": "/api/cron/cleanup", "schedule": "0 19 * * *" }]
+}
