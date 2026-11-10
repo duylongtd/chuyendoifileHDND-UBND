@@ -75,13 +75,26 @@ export interface SheetSpec {
   keyType: "VTVL" | "CV" | "NV";
   /** Cột mã VTVL dự phòng (khi mã công việc không có ở A2) */
   vtvlCol?: string;
+  /** Cột "Cơ quan" (biểu A1): dùng khi nhiệm vụ chưa gắn công việc nào ở A2 */
+  orgCol?: string;
+}
+
+/**
+ * Khối ghi ở cột "Cơ quan": chỉ nhắc HĐND -> HĐND; còn lại (UBND, để trống, ghi cả hai) -> UBND,
+ * vì UBND là khối nhận mọi thứ không thuộc 4 chức danh HĐND.
+ */
+export function orgFromAgency(text: string): Org {
+  const n = normalizeText(text);
+  const h = /\b(hdnd|hoi dong nhan dan)\b/.test(n);
+  const u = /\b(ubnd|uy ban nhan dan)\b/.test(n);
+  return h && !u ? "HDND" : "UBND";
 }
 
 /** Dữ liệu bắt đầu từ dòng 3 (dòng 1: tên biểu, dòng 2: tiêu đề cột). */
 export const DATA_START_ROW = 3;
 
 export const SHEET_SPECS: SheetSpec[] = [
-  { role: "A1", label: "1. A1_NhiemVu", match: /A1_NhiemVu/i, keyCol: "A", keyType: "NV" },
+  { role: "A1", label: "1. A1_NhiemVu", match: /A1_NhiemVu/i, keyCol: "A", keyType: "NV", orgCol: "C" },
   { role: "A2", label: "2. A2_CongViec", match: /A2_CongViec/i, keyCol: "C", keyType: "VTVL" },
   { role: "B1", label: "3. B1_KhoiLuong", match: /B1_KhoiLuong/i, keyCol: "A", keyType: "CV", vtvlCol: "B" },
   { role: "B2CT", label: "4. B2_CT_TacDong", match: /B2_CT/i, keyCol: "A", keyType: "CV", vtvlCol: "B" },

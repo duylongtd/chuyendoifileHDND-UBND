@@ -20,7 +20,7 @@ Vị trí **để trống tên** thì hệ thống chỉ gợi ý (dựa vào m�
 | `9. D1_NhanLuc` | Mã VTVL cột B |
 | `2. A2_CongViec` | Mã VTVL cột C |
 | `3. B1_KhoiLuong`, `4. B2_CT_TacDong`, `5. B2_ThayDoi` | Mã công việc cột A, đối chiếu sang A2 |
-| `1. A1_NhiemVu` | Mã nhiệm vụ: nhiệm vụ chỉ của một khối thì vào khối đó; dùng chung hoặc chưa gắn công việc thì có ở **cả hai file** |
+| `1. A1_NhiemVu` | Mã nhiệm vụ, theo các công việc gắn với nó ở A2: chỉ của một khối thì vào khối đó; dùng chung cả hai khối thì có ở **cả hai file**. Nhiệm vụ **chưa gắn công việc nào** thì xếp theo cột "Cơ quan" (chỉ ghi HĐND → file HĐND; còn lại → file UBND) và có cảnh báo |
 | Các biểu khác (hướng dẫn, danh mục, tham số…) | Không tách, giữ nguyên ở cả hai file |
 
 Sau khi tách:
@@ -62,6 +62,7 @@ Trình duyệt ──(từng phần 4 MB)──▶ /api/jobs/:id/upload ──�
 - **Next.js (App Router, TypeScript)**: giao diện + API.
 - **Vercel Blob (private)**: file gốc, file kết quả và trạng thái tác vụ (`job.json`). Không cần cơ sở dữ liệu.
 - **Tải lên theo từng phần 4 MB**, gửi song song 4 phần một lúc qua API của hệ thống (Vercel giới hạn 4,5 MB mỗi request). Cách này chạy được với mọi kiểu xác thực của Blob (`BLOB_READ_WRITE_TOKEN` hoặc OIDC của store Private); mỗi phần tự thử lại 3 lần khi rớt mạng.
+- **Mạng yếu**: nếu vẫn lỗi đường truyền sau khi thử lại, trình duyệt tự tải lại cả file với phần nhỏ hơn và ít luồng hơn (4 MB × 4 luồng → 2 MB × 2 → 1 MB × 1); thất bại hẳn thì hiện nút "Tải lại file này" (không phải chọn lại file).
 - **Toàn vẹn file tải lên**: trình duyệt tính SHA-256 của file gốc; máy chủ ghép các phần rồi đối chiếu số phần, kích thước và SHA-256 trước khi đọc vị trí và trước khi tách. Lệch một bit cũng bị từ chối và yêu cầu tải lại.
 - **Vercel Queues**: mỗi file là một thông điệp; lỗi hệ thống thì hàng đợi tự giao lại. Nếu Queues chưa bật hoặc gửi lỗi, hệ thống tự chuyển sang chạy nền trong function (`after()`), nên vẫn hoạt động.
 - **Mỗi instance chỉ tách 1 file tại một thời điểm** (các file khác xếp hàng) để không tràn bộ nhớ.
@@ -118,7 +119,7 @@ ACCESS_CODE=... python scripts/e2e_test.py # đầu-cuối với server đang ch
 ACCESS_CODE=... python scripts/e2e_test.py --sample duong-dan/file-that.xlsx   # thêm nhóm tải nặng
 ```
 
-`scripts/e2e_test.py` gồm 98 ca, chia 9 nhóm: xác thực (cookie giả, dò mã), tạo tác vụ (dữ liệu sai, tên file nguy hiểm, chặn tạo dồn dập),
+`scripts/e2e_test.py` gồm 102 ca, chia 9 nhóm: xác thực (cookie giả, dò mã), tạo tác vụ (dữ liệu sai, tên file nguy hiểm, chặn tạo dồn dập),
 tải lên từng phần, toàn vẹn (SHA-256, kích thước, số phần), file lạ/hỏng/độc hại (bom nén, XML dị dạng 300.000 thẻ, file phần mềm khác lưu),
 quy tắc tách và dữ liệu biên (mã lạ, dòng thiếu mã, dòng trống xen giữa, mã trùng, ô gộp, thiếu biểu), trạng thái tác vụ
 (bấm Tách nhiều lần, xóa giữa chừng), tải nặng đồng thời (6 file 35 MB cùng lúc) và dọn file.

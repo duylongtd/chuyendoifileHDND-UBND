@@ -1,6 +1,6 @@
 // Tách bộ biểu VTVL "HĐND-UBND" thành 2 workbook: HĐND và UBND.
 // Nội dung ô giữ nguyên; chỉ chọn dòng theo khối và dồn lên liền nhau. Công thức được Excel tính lại khi mở.
-import { DATA_START_ROW, Org, RowOrg, SheetSpec, specForSheet, suggestOrg, Suggestion } from "./classify";
+import { DATA_START_ROW, Org, orgFromAgency, RowOrg, SheetSpec, specForSheet, suggestOrg, Suggestion } from "./classify";
 import { buildSheetModel, cellOf, mcellText, MRow, renderSheet, rowHasConstant, SheetFormatError } from "./sheet-model";
 import { getAttr, parseSharedStrings, setAttr, xmlUnescape } from "./xml";
 import { deflated, deflatedChunks, inflateEntry, OutEntry, passthrough, readZip, writeZip, ZipEntry, ZipError } from "./zip";
@@ -192,8 +192,14 @@ function classifyRow(row: MRow, spec: SheetSpec, shared: string[], ctx: Ctx): Ro
     warn(ctx, `Biểu ${spec.label}: mã công việc "${key}" không có trong biểu A2 → giữ ở cả hai file`);
     return "BOTH";
   }
-  // Nhiệm vụ: chỉ thuộc một khối nếu mọi công việc của nó thuộc khối đó; dùng chung/chưa gắn -> cả hai
-  return ctx.nv.get(key) ?? "BOTH";
+  // Nhiệm vụ đã gắn công việc ở A2: thuộc một khối nếu mọi công việc của nó thuộc khối đó; dùng chung -> cả hai
+  const linked = ctx.nv.get(key);
+  if (linked) return linked;
+  // Nhiệm vụ CHƯA gắn công việc nào: không biết thuộc vị trí nào -> xếp theo cột "Cơ quan"
+  // (không chép sang cả hai file, tránh nhiệm vụ của phòng chuyên môn UBND lọt vào file HĐND)
+  const org = orgFromAgency(spec.orgCol ? mcellText(cellOf(row, spec.orgCol), shared) : "");
+  warn(ctx, `Biểu ${spec.label}: nhiệm vụ chưa gắn công việc nào ở biểu A2 → xếp vào file ${org === "HDND" ? "HĐND" : "UBND"} theo cột "Cơ quan"`);
+  return org;
 }
 
 function patchWorkbookXml(xml: string): string {

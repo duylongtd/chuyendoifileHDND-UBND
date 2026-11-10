@@ -8,6 +8,8 @@ export const LIMITS = {
   /** File được tải lên theo từng phần: trình duyệt cắt 4 MB (Vercel giới hạn 4,5 MB mỗi request) */
   partBytes: 4 * 1024 * 1024,
   maxPartBytes: 4.3 * 1024 * 1024,
+  /** Khi mạng yếu, trình duyệt tự chuyển sang phần nhỏ hơn (tới 1 MB); không nhận phần nhỏ hơn mức này trừ phần cuối */
+  minPartBytes: 512 * 1024,
   /** Chống lạm dụng: số file tối đa mỗi địa chỉ IP được tạo trong 10 phút */
   maxFilesPer10MinPerIp: 90,
   /** File và kết quả tự xóa sau số giờ này */

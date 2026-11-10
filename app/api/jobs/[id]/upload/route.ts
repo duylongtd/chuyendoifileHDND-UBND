@@ -6,14 +6,14 @@ import { fail, json, route } from "@/lib/server/http";
 import { loadJob, partFile } from "@/lib/server/jobs";
 import { putObject } from "@/lib/server/storage";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 type Ctx = { params: Promise<{ id: string }> };
 
 export const PUT = route(async (req: Request, ctx: Ctx) => {
   const url = new URL(req.url);
   const part = Number(url.searchParams.get("part"));
   const total = Number(url.searchParams.get("total"));
-  const maxParts = Math.ceil(LIMITS.maxFileBytes / LIMITS.partBytes);
+  const maxParts = Math.ceil(LIMITS.maxFileBytes / LIMITS.minPartBytes);
   if (!Number.isInteger(part) || !Number.isInteger(total) || total < 1 || total > maxParts || part < 0 || part >= total) {
     return fail(400, "BAD_PART", "Thông tin phần tải lên không hợp lệ.");
   }
@@ -26,6 +26,10 @@ export const PUT = route(async (req: Request, ctx: Ctx) => {
   const body = Buffer.from(await req.arrayBuffer());
   if (!body.length) return fail(400, "NO_BODY", "Không nhận được nội dung file.");
   if (body.length > LIMITS.maxPartBytes) return fail(413, "PART_TOO_LARGE", "Phần tải lên vượt kích thước cho phép.");
+  // Trình duyệt chia phần cỡ cố định P, total = ceil(size / P) nên (total - 1) * P < size:
+  // một phần không thể lớn hơn size / (total - 1). Chặn việc gửi dữ liệu vượt kích thước file đã khai báo.
+  const partCap = total > 1 ? Math.ceil(job.size / (total - 1)) : job.size;
+  if (body.length > partCap + 1024) return fail(413, "PART_TOO_LARGE", "Phần tải lên lớn hơn kích thước dự kiến của file.");
 
   await putObject(partFile(job.id, part), body, XLSX_MIME);
   return json({ part, size: body.length });

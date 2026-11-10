@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, ApiError, uploadFile } from "@/lib/client/upload";
 import type { Job } from "@/lib/server/jobs";
 
 type Org = "HDND" | "UBND";
@@ -23,6 +24,8 @@ interface Item {
   job?: Job;
   mapping: Record<string, Org>;
   error?: string;
+  /** Ghi chú tiến trình (ví dụ đang tải lại với phần nhỏ hơn) */
+  note?: string;
   showAll: boolean;
 }
 
@@ -30,38 +33,6 @@ const LS_KEY = "vtvl-split-jobs-v1";
 const STALE_QUEUED_MS = 3 * 60 * 1000;
 const STALE_PROCESSING_MS = 8 * 60 * 1000;
 const SHEET_LABEL: Record<string, string> = { A2: "2. A2_CongViec", B1: "3. B1_KhoiLuong", C3: "8. C3_NhuCau", D1: "9. D1_NhanLuc", D2: "10. D2_PhuongAn" };
-
-class ApiError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-    public code?: string,
-    public data?: unknown,
-  ) {
-    super(message);
-  }
-}
-
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(url, { ...init, headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers } });
-  } catch {
-    throw new ApiError("Không kết nối được máy chủ. Hãy kiểm tra mạng rồi thử lại.", 0);
-  }
-  const text = await res.text();
-  let data: { error?: { code?: string; message?: string } } | null = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-  if (!res.ok) {
-    const fallback = res.status === 413 ? "File quá lớn so với giới hạn của máy chủ." : res.status === 504 ? "Máy chủ xử lý quá lâu. Hãy thử lại." : `Máy chủ trả lỗi ${res.status}. Hãy thử lại.`;
-    throw new ApiError(data?.error?.message ?? fallback, res.status, data?.error?.code, data);
-  }
-  return data as T;
-}
 
 function mb(n: number): string {
   return (n / 1048576).toLocaleString("vi-VN", { maximumFractionDigits: 1 }) + " MB";
@@ -88,52 +59,6 @@ function mappingOf(job: Job): Record<string, Org> {
   const m: Record<string, Org> = {};
   for (const p of job.positions ?? []) m[p.code] = job.mapping?.[p.code] ?? p.suggested;
   return m;
-}
-
-async function sha256Hex(file: File): Promise<string | undefined> {
-  // crypto.subtle chỉ có trên https / localhost; thiếu thì bỏ qua (máy chủ vẫn đối chiếu số phần và kích thước)
-  if (!globalThis.crypto?.subtle) return undefined;
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-const UPLOAD_CONCURRENCY = 4;
-
-/**
- * Tải file lên theo từng phần nhỏ qua API của hệ thống (mỗi phần dưới giới hạn 4,5 MB của máy chủ),
- * gửi SONG SONG nhiều phần cùng lúc. Mỗi phần tự thử lại tối đa 3 lần khi rớt mạng.
- * Trả về số phần và mã SHA-256 của file gốc để máy chủ đối chiếu toàn vẹn.
- */
-async function uploadFile(jobId: string, file: File, partBytes: number, onProgress: (pct: number) => void): Promise<{ parts: number; sha256?: string }> {
-  const total = Math.max(1, Math.ceil(file.size / partBytes));
-  const hashing = sha256Hex(file);
-  let next = 0;
-  let sent = 0;
-  let failed: unknown = null;
-  const worker = async () => {
-    while (next < total && !failed) {
-      const i = next++;
-      const chunk = file.slice(i * partBytes, (i + 1) * partBytes);
-      for (let attempt = 1; ; attempt++) {
-        try {
-          await api(`/api/jobs/${jobId}/upload?part=${i}&total=${total}`, { method: "PUT", body: chunk, headers: { "Content-Type": "application/octet-stream" } });
-          break;
-        } catch (e) {
-          const retryable = e instanceof ApiError && (e.status === 0 || e.status >= 500);
-          if (!retryable || attempt >= 3) {
-            failed = e;
-            return;
-          }
-          await new Promise((r) => setTimeout(r, 1200 * attempt));
-        }
-      }
-      sent += chunk.size;
-      onProgress((sent / Math.max(1, file.size)) * 100);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, worker));
-  if (failed) throw failed;
-  return { parts: total, sha256: await hashing };
 }
 
 export default function Page() {
@@ -298,6 +223,8 @@ function Workspace({ limits, onUnauthorized }: { limits: Limits; onUnauthorized:
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const inputRef = useRef<HTMLInputElement>(null);
+  /** Giữ file người dùng đã chọn để tải lại được khi lỗi đường truyền (không phải chọn lại file) */
+  const filesRef = useRef(new Map<string, File>());
 
   const patch = useCallback((key: string, p: Partial<Item>) => setItems((list) => list.map((it) => (it.key === key ? { ...it, ...p } : it))), []);
 
@@ -404,12 +331,19 @@ function Workspace({ limits, onUnauthorized }: { limits: Limits; onUnauthorized:
       for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
         try {
-          const up = await uploadFile(job.id, files[i], limits.partBytes, (pct) => patch(job.id, { progress: Math.round(pct) }));
+          filesRef.current.set(job.id, files[i]);
+          const up = await uploadFile(
+            job.id,
+            files[i],
+            limits.partBytes,
+            (pct) => patch(job.id, { progress: Math.round(pct) }),
+            (note) => patch(job.id, { note }),
+          );
           patch(job.id, { phase: "inspecting", progress: 100 });
           const r = await api<{ job: Job }>(`/api/jobs/${job.id}/inspect`, { method: "POST", body: JSON.stringify(up) });
           patch(job.id, { phase: "confirm", job: r.job, mapping: mappingOf(r.job) });
         } catch (e) {
-          patch(job.id, { phase: "error", error: handleError(e) });
+          patch(job.id, { phase: "error", error: handleError(e), note: undefined });
         }
       }
     },
@@ -434,9 +368,24 @@ function Workspace({ limits, onUnauthorized }: { limits: Limits; onUnauthorized:
   );
 
   const remove = useCallback((it: Item) => {
+    filesRef.current.delete(it.key);
     setItems((list) => list.filter((x) => x.key !== it.key));
     if (it.jobId) void api(`/api/jobs/${it.jobId}`, { method: "DELETE" }).catch(() => {});
   }, []);
+
+  // Tải lại file bị lỗi lúc tải lên/đọc vị trí: bỏ tác vụ cũ, tạo tác vụ mới với chính file đã chọn
+  const retryUpload = useCallback(
+    (it: Item) => {
+      const file = filesRef.current.get(it.key);
+      if (!file) return;
+      filesRef.current.delete(it.key);
+      itemsRef.current = itemsRef.current.filter((x) => x.key !== it.key);
+      setItems((list) => list.filter((x) => x.key !== it.key));
+      if (it.jobId) void api(`/api/jobs/${it.jobId}`, { method: "DELETE" }).catch(() => {});
+      void addFiles([file]);
+    },
+    [addFiles],
+  );
 
   const done = items.filter((i) => i.phase === "done" && i.jobId);
   const ready = items.filter((i) => i.phase === "confirm");
@@ -546,7 +495,15 @@ function Workspace({ limits, onUnauthorized }: { limits: Limits; onUnauthorized:
 
       <div style={{ marginTop: 14 }}>
         {items.map((it) => (
-          <FileCard key={it.key} it={it} now={now} patch={patch} onSplit={() => void startSplit(it)} onRemove={() => remove(it)} />
+          <FileCard
+            key={it.key}
+            it={it}
+            now={now}
+            patch={patch}
+            onSplit={() => void startSplit(it)}
+            onRemove={() => remove(it)}
+            onRetryUpload={filesRef.current.has(it.key) ? () => retryUpload(it) : undefined}
+          />
         ))}
       </div>
 
@@ -576,7 +533,21 @@ function StatusBadge({ it, stale }: { it: Item; stale: boolean }) {
   }
 }
 
-function FileCard({ it, now, patch, onSplit, onRemove }: { it: Item; now: number; patch: (key: string, p: Partial<Item>) => void; onSplit: () => void; onRemove: () => void }) {
+function FileCard({
+  it,
+  now,
+  patch,
+  onSplit,
+  onRemove,
+  onRetryUpload,
+}: {
+  it: Item;
+  now: number;
+  patch: (key: string, p: Partial<Item>) => void;
+  onSplit: () => void;
+  onRemove: () => void;
+  onRetryUpload?: () => void;
+}) {
   const job = it.job;
   const positions = useMemo(() => job?.positions ?? [], [job]);
   const nH = positions.filter((p) => it.mapping[p.code] === "HDND").length;
@@ -607,6 +578,11 @@ function FileCard({ it, now, patch, onSplit, onRemove }: { it: Item; now: number
         <div className="bar" aria-hidden>
           <i style={{ width: `${it.phase === "inspecting" ? 100 : it.progress}%` }} />
         </div>
+      )}
+      {it.phase === "uploading" && it.note && (
+        <p className="small" style={{ margin: "8px 0 0", color: "var(--warn)" }} role="status">
+          {it.note}
+        </p>
       )}
 
       {it.phase === "confirm" && job && (
@@ -767,6 +743,13 @@ function FileCard({ it, now, patch, onSplit, onRemove }: { it: Item; now: number
             <div className="row" style={{ marginTop: 10 }}>
               <button className="btn sm" onClick={() => patch(it.key, { phase: "confirm", error: undefined })}>
                 Thử tách lại
+              </button>
+            </div>
+          )}
+          {!positions.length && onRetryUpload && (
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="btn sm primary" onClick={onRetryUpload}>
+                Tải lại file này
               </button>
             </div>
           )}

@@ -11,7 +11,7 @@ Cách chạy (cần: pip install openpyxl):
 Ví dụ:
   python scripts/verify_split.py goc.xlsx hdnd.xlsx ubnd.xlsx H27.120_VT2,H27.120_VT4,H27.120_VT5,H27.120_VT6
 """
-import sys, re, zipfile, zlib, collections, xml.parsers.expat
+import sys, re, zipfile, zlib, collections, unicodedata, xml.parsers.expat
 import openpyxl
 orig_p, hd_p, ub_p = sys.argv[1:4]
 HD = set(sys.argv[4].split(","))
@@ -107,7 +107,12 @@ def org_of(name, kind, keycol, i):
     if k in (None, ""): return None
     if kind == "VT": return "H" if k in HD else "U"
     if kind == "CV": return cv2org.get(k, "B")
-    s = nv2org.get(k, set()); return "H" if s == {"H"} else "U" if s == {"U"} else "B"
+    s = nv2org.get(k, set())
+    if s: return "H" if s == {"H"} else "U" if s == {"U"} else "B"
+    # nhiệm vụ chưa gắn công việc nào ở A2: xếp theo cột "Cơ quan" (C); chỉ nhắc HĐND -> HĐND, còn lại -> UBND
+    cq = str(OC[name][i][2] or "").lower()
+    h = "hđnd" in cq or "hội đồng nhân dân" in cq; u = "ubnd" in cq or "ủy ban nhân dân" in cq or "uỷ ban nhân dân" in cq
+    return "H" if h and not u else "U"
 total_cells = 0
 for name, keycol, kind in SPECS:
     rows_o = O[name]; data = [i for i in rows_o if i >= 3 and any(isconst(v) for v in rows_o[i]) or (i >= 3 and OC[name][i][ord(keycol) - 65] not in (None, ""))]

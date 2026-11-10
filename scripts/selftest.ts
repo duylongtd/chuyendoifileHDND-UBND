@@ -1,8 +1,9 @@
 // Tự kiểm các quy tắc cốt lõi:  npm test
 import assert from "node:assert/strict";
-import { outputFileName, suggestOrg } from "../lib/xlsx/classify";
+import { orgFromAgency, outputFileName, suggestOrg } from "../lib/xlsx/classify";
 import { translateFormula } from "../lib/xlsx/formula";
 import { escapeFormula, unescapeFormula } from "../lib/xlsx/xml";
+import { uploadFile } from "../lib/client/upload";
 
 let n = 0;
 const eq = (a: unknown, b: unknown, msg = "") => {
@@ -51,6 +52,14 @@ eq(org(" ", "Giúp Trưởng ban tổ chức thực hiện nhiệm vụ"), "HDND
 eq(org("", "Tham mưu công tác văn phòng"), "UBND?", "tên trống, không đủ căn cứ: cần xác nhận");
 eq(org("", ""), "UBND?");
 
+// --- Cột "Cơ quan" của nhiệm vụ chưa gắn công việc ---
+eq(orgFromAgency("HĐND phường Sông Trí"), "HDND");
+eq(orgFromAgency("Hội đồng nhân dân xã A"), "HDND");
+eq(orgFromAgency("UBND phường Sông Trí"), "UBND");
+eq(orgFromAgency("Ủy ban nhân dân phường Hà Huy Tập"), "UBND");
+eq(orgFromAgency("HĐND và UBND phường"), "UBND", "ghi cả hai: xếp UBND");
+eq(orgFromAgency(""), "UBND", "để trống: xếp UBND");
+
 // --- Tên file kết quả ---
 eq(outputFileName("01.HĐND-UBND Phường Hà Huy Tập.xlsx", "HDND"), "01.HĐND Phường Hà Huy Tập.xlsx");
 eq(outputFileName("01.HĐND-UBND Phường Hà Huy Tập.xlsx", "UBND"), "01.UBND Phường Hà Huy Tập.xlsx");
@@ -60,4 +69,57 @@ eq(outputFileName("UBND và HĐND xã B.xlsx", "HDND"), "HĐND xã B.xlsx");
 eq(outputFileName("Bo bieu xa C.xlsx", "HDND"), "Bo bieu xa C - HĐND.xlsx");
 eq(outputFileName('a/b:c*"?.xlsx', "UBND"), "a_b_c___ - UBND.xlsx", "ký tự không hợp lệ trong tên file");
 
-console.log(`Tự kiểm: ${n}/${n} đạt`);
+// --- Tải lên: tự chuyển sang phần nhỏ hơn khi mạng chặn/rớt gói lớn ---
+async function uploadTests() {
+  const file = new File([new Uint8Array(9 * 1024 * 1024 + 123)], "a.xlsx");
+  const PART = 4 * 1024 * 1024;
+  const run = async (maxOkBytes: number, failStatus: number | null) => {
+    const calls: { part: number; total: number; size: number; ok: boolean }[] = [];
+    const notes: string[] = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      const q = new URL(url, "http://x").searchParams;
+      const size = (init.body as Blob).size;
+      const ok = size <= maxOkBytes;
+      calls.push({ part: Number(q.get("part")), total: Number(q.get("total")), size, ok });
+      if (!ok && failStatus === null) throw new TypeError("Failed to fetch");
+      return new Response(JSON.stringify(ok ? { ok: true } : { error: { message: "lỗi máy chủ" } }), { status: ok ? 200 : failStatus! });
+    }) as typeof fetch;
+    let result: { parts: number } | null = null;
+    let error: Error | null = null;
+    try {
+      result = await uploadFile("job", file, PART, () => {}, (x) => x && notes.push(x), 1);
+    } catch (e) {
+      error = e as Error;
+    }
+    return { calls, notes, result, error };
+  };
+  // mạng tốt: 3 phần 4 MB, không ghi chú
+  let r = await run(Infinity, null);
+  eq(r.result?.parts, 3, "mạng tốt: 3 phần 4 MB");
+  eq(r.calls.length, 3);
+  eq(r.notes.length, 0);
+  // mạng rớt mọi gói > 1,5 MB: phải tự hạ xuống 1 MB và thành công, gửi đủ mọi byte
+  r = await run(1.5 * 1024 * 1024, null);
+  eq(r.result?.parts, 10, "mạng chặn gói lớn: tự chuyển sang 10 phần 1 MB");
+  const okParts = r.calls.filter((c) => c.ok && c.total === 10);
+  eq(okParts.map((c) => c.part).sort((a, b) => a - b), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "đủ 10 phần, không thiếu phần nào");
+  eq(okParts.reduce((s, c) => s + c.size, 0), file.size, "tổng byte gửi đi bằng đúng kích thước file");
+  eq(r.notes.length > 0, true, "có thông báo đang tải lại với phần nhỏ hơn");
+  // máy chủ trả 503 với gói > 2,5 MB: hạ xuống 2 MB là đủ
+  r = await run(2.5 * 1024 * 1024, 503);
+  eq(r.result?.parts, 5, "lỗi 5xx với gói lớn: chuyển sang 5 phần 2 MB");
+  // mạng chết hẳn: báo lỗi rõ, không treo
+  r = await run(0, null);
+  eq(r.result, null);
+  eq(/Tải lại file này/.test(r.error?.message ?? ""), true, "mạng chết: thông báo hướng dẫn bấm Tải lại");
+  // lỗi do dữ liệu (4xx): dừng ngay, không thử lại vô ích
+  r = await run(0, 409);
+  eq(r.calls.length <= 4, true, "lỗi 4xx: không thử lại (" + r.calls.length + " lần gọi)");
+}
+
+uploadTests()
+  .then(() => console.log(`Tự kiểm: ${n}/${n} đạt`))
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });

@@ -284,7 +284,9 @@ def _(g):
         check(g, f"{name} → 400", q(p, t) == 400)
     check(g, "phần rỗng → 400", q(0, 1, b"") == 400)
     check(g, "phần 5 MB → bị từ chối", q(0, 2, b"\0" * (5 * 1024 * 1024)) in (413, 0))
-    check(g, "total vượt số phần tối đa của file 60 MB → 400", q(0, 40) == 400, "chặn dồn dung lượng vượt giới hạn")
+    check(g, "total vượt số phần tối đa (200) → 400", q(0, 200) == 400)
+    check(g, "phần lớn hơn kích thước dự kiến của file (khai 1 byte, gửi 5.000 byte) → 413", q(0, 1, b"x" * 5000) == 413, "tổng các phần không thể vượt kích thước đã khai báo")
+    check(g, "chia phần nhỏ (total=40) vẫn hợp lệ → 200", q(0, 40) == 200, "phục vụ tự tải lại với phần nhỏ khi mạng yếu")
     check(g, "ghi đè cùng một phần 2 lần → 200", q(0, 1, b"a") == 200 and q(0, 1, b"b") == 200)
     st, b, _ = http("POST", f"/api/jobs/{jid}/inspect", json.dumps({"parts": 1}).encode())
     check(g, "nội dung rác → lỗi rõ, không 500", st == 422 and "Excel" in msg(b), msg(b))
@@ -395,7 +397,7 @@ def _(g):
             ws.append(r)
         return ws
     a2 = [[f"CV{i}", f"NV{(i + 1) // 2}", p[0], f"việc {i}"] for i, p in enumerate(POS, 1)]
-    add("1. A1_NhiemVu", [[f"NV{i}", f"nhiệm vụ {i}"] for i in range(1, 5)] + [["NV9", "chưa gắn công việc"]])
+    add("1. A1_NhiemVu", [[f"NV{i}", f"nhiệm vụ {i}", "UBND xã Thử"] for i in range(1, 5)] + [["NV9", "chưa gắn, cơ quan UBND", "UBND xã Thử"], ["NV10", "chưa gắn, cơ quan HĐND", "HĐND xã Thử"], ["NV11", "chưa gắn, cơ quan trống"]])
     add("2. A2_CongViec", a2)
     b1 = add("3. B1_KhoiLuong", [[r[0], None, 10, 30] for r in a2])
     for i in range(3, 3 + len(a2)):
@@ -425,9 +427,12 @@ def _(g):
         hb = ox.load_workbook(io.BytesIO(H)); ws = hb["3. B1_KhoiLuong"]
         check(g, "công thức B1 dịch đúng dòng sau khi dồn", ws["F3"].value == '=IF(A3="","",C3*D3/60)' and "MATCH(A4," in ws["B4"].value, f"{ws['F3'].value}")
         check(g, "dòng thừa đã trống, công thức mẫu còn", ws["A7"].value is None and ws["C7"].value is None and str(ws["F7"].value).startswith("=IF(A7"), f"A7={ws['A7'].value} F7={ws['F7'].value}")
-        check(g, "A1: NV1 dùng chung (VT1+VT2) có ở cả hai; NV9 chưa gắn có ở cả hai", "NV1" in keys_of(H, "1. A1_NhiemVu") and "NV1" in keys_of(Ub, "1. A1_NhiemVu") and "NV9" in keys_of(H, "1. A1_NhiemVu") and "NV9" in keys_of(Ub, "1. A1_NhiemVu"), f"{keys_of(H, '1. A1_NhiemVu')}")
+        ah, au = keys_of(H, "1. A1_NhiemVu"), keys_of(Ub, "1. A1_NhiemVu")
+        check(g, "A1: NV1 dùng chung (VT1+VT2) có ở cả hai file", "NV1" in ah and "NV1" in au, f"HĐND {ah} | UBND {au}")
+        check(g, "A1: nhiệm vụ chưa gắn công việc xếp theo cột Cơ quan (UBND/trống → chỉ UBND; HĐND → chỉ HĐND)", "NV9" in au and "NV9" not in ah and "NV11" in au and "NV11" not in ah and "NV10" in ah and "NV10" not in au, f"HĐND {ah} | UBND {au}")
+        check(g, "A1: có cảnh báo về nhiệm vụ chưa gắn công việc", any("chưa gắn công việc" in w for w in j["report"]["warnings"]), str(j["report"]["warnings"])[:160])
         check(g, "A1: NV3 (VT5+VT6, chỉ HĐND) chỉ ở file HĐND", "NV3" in keys_of(H, "1. A1_NhiemVu") and "NV3" not in keys_of(Ub, "1. A1_NhiemVu"))
-        check(g, "D1: mã lạ + dòng không mã giữ ở cả hai, có cảnh báo", "NL99" in keys_of(H, "9. D1_NhanLuc") and "NL99" in keys_of(Ub, "9. D1_NhanLuc") and len(j["report"]["warnings"]) >= 2, str(j["report"]["warnings"]))
+        check(g, "D1: mã lạ + dòng không mã giữ ở cả hai, có cảnh báo", "NL99" in keys_of(H, "9. D1_NhanLuc") and "NL99" in keys_of(Ub, "9. D1_NhanLuc") and sum("D1_NhanLuc" in w for w in j["report"]["warnings"]) >= 2, str(j["report"]["warnings"]))
         check(g, "D2: 2 dòng/vị trí chia đúng", keys_of(H, "10. D2_PhuongAn") == ["X_VT2", "X_VT2", "X_VT4", "X_VT4", "X_VT5", "X_VT5", "X_VT6", "X_VT6"])
         check(g, "sheet khác giữ nguyên", hb["Khac"]["A1"].value == "giữ nguyên" and ox.load_workbook(io.BytesIO(Ub))["Khac"]["A1"].value == "giữ nguyên")
         check(g, "bật tính lại công thức khi mở", b'fullCalcOnLoad="1"' in zipfile.ZipFile(io.BytesIO(H)).read("xl/workbook.xml"))
