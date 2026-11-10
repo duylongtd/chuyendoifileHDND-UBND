@@ -7,6 +7,7 @@ type Org = "HDND" | "UBND";
 type Phase = "uploading" | "inspecting" | "confirm" | "queued" | "processing" | "done" | "error";
 
 interface Limits {
+  partBytes: number;
   maxFiles: number;
   maxFileMB: number;
   retentionHours: number;
@@ -25,7 +26,6 @@ interface Item {
   showAll: boolean;
 }
 
-const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const LS_KEY = "vtvl-split-jobs-v1";
 const STALE_QUEUED_MS = 3 * 60 * 1000;
 const STALE_PROCESSING_MS = 8 * 60 * 1000;
@@ -90,47 +90,38 @@ function mappingOf(job: Job): Record<string, Org> {
   return m;
 }
 
-async function uploadFile(storage: string, jobId: string, file: File, onProgress: (pct: number) => void): Promise<void> {
-  if (storage === "blob") {
-    const { upload } = await import("@vercel/blob/client");
-    await upload(`jobs/${jobId}/input.xlsx`, file, {
-      access: "private",
-      handleUploadUrl: "/api/upload",
-      clientPayload: jobId,
-      contentType: XLSX_MIME,
-      multipart: file.size > 8 * 1024 * 1024,
-      onUploadProgress: (e) => onProgress(e.percentage),
-    });
-    return;
-  }
-  await new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", `/api/jobs/${jobId}/upload`);
-    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress((e.loaded / e.total) * 100);
-    xhr.onload = () => {
-      if (xhr.status < 300) return resolve();
-      let msg = `Tải lên thất bại (lỗi ${xhr.status}).`;
+/**
+ * Tải file lên theo từng phần nhỏ qua API của hệ thống (mỗi phần dưới giới hạn 4,5 MB của máy chủ).
+ * Mỗi phần tự thử lại tối đa 3 lần khi rớt mạng. Trả về số phần đã gửi.
+ */
+async function uploadFile(jobId: string, file: File, partBytes: number, onProgress: (pct: number) => void): Promise<number> {
+  const total = Math.max(1, Math.ceil(file.size / partBytes));
+  for (let i = 0; i < total; i++) {
+    const chunk = file.slice(i * partBytes, (i + 1) * partBytes);
+    for (let attempt = 1; ; attempt++) {
       try {
-        msg = JSON.parse(xhr.responseText)?.error?.message ?? msg;
-      } catch {}
-      reject(new Error(msg));
-    };
-    xhr.onerror = () => reject(new Error("Mất kết nối khi đang tải file lên. Hãy thử lại."));
-    xhr.send(file);
-  });
+        await api(`/api/jobs/${jobId}/upload?part=${i}&total=${total}`, { method: "PUT", body: chunk, headers: { "Content-Type": "application/octet-stream" } });
+        break;
+      } catch (e) {
+        const retryable = e instanceof ApiError && (e.status === 0 || e.status >= 500);
+        if (!retryable || attempt >= 3) throw e;
+        await new Promise((r) => setTimeout(r, 1200 * attempt));
+      }
+    }
+    onProgress(((i + 1) / total) * 100);
+  }
+  return total;
 }
 
 export default function Page() {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  const [limits, setLimits] = useState<Limits>({ maxFiles: 3, maxFileMB: 60, retentionHours: 24 });
-  const [storage, setStorage] = useState("local");
+  const [limits, setLimits] = useState<Limits>({ partBytes: 4 * 1024 * 1024, maxFiles: 3, maxFileMB: 60, retentionHours: 24 });
   const [fatal, setFatal] = useState("");
 
   const refreshSession = useCallback(async () => {
     try {
       const s = await api<{ authed: boolean; storage?: string; limits: Limits }>("/api/session");
       setLimits(s.limits);
-      if (s.storage) setStorage(s.storage);
       setAuthed(s.authed);
       setFatal("");
     } catch (e) {
@@ -172,7 +163,7 @@ export default function Page() {
         {fatal && <div className="banner err">{fatal}</div>}
         {authed === null && !fatal && <p className="muted">Đang tải…</p>}
         {authed === false && <Login onDone={refreshSession} />}
-        {authed && <Workspace limits={limits} storage={storage} onUnauthorized={() => setAuthed(false)} />}
+        {authed && <Workspace limits={limits} onUnauthorized={() => setAuthed(false)} />}
       </main>
     </>
   );
@@ -215,7 +206,7 @@ function Login({ onDone }: { onDone: () => void }) {
   );
 }
 
-function Workspace({ limits, storage, onUnauthorized }: { limits: Limits; storage: string; onUnauthorized: () => void }) {
+function Workspace({ limits, onUnauthorized }: { limits: Limits; onUnauthorized: () => void }) {
   const [items, setItems] = useState<Item[]>([]);
   const [notice, setNotice] = useState<{ kind: "err" | "info"; text: string } | null>(null);
   const [over, setOver] = useState(false);
@@ -330,16 +321,16 @@ function Workspace({ limits, storage, onUnauthorized }: { limits: Limits; storag
       for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
         try {
-          await uploadFile(storage, job.id, files[i], (pct) => patch(job.id, { progress: Math.round(pct) }));
+          const parts = await uploadFile(job.id, files[i], limits.partBytes, (pct) => patch(job.id, { progress: Math.round(pct) }));
           patch(job.id, { phase: "inspecting", progress: 100 });
-          const r = await api<{ job: Job }>(`/api/jobs/${job.id}/inspect`, { method: "POST" });
+          const r = await api<{ job: Job }>(`/api/jobs/${job.id}/inspect`, { method: "POST", body: JSON.stringify({ parts }) });
           patch(job.id, { phase: "confirm", job: r.job, mapping: mappingOf(r.job) });
         } catch (e) {
           patch(job.id, { phase: "error", error: handleError(e) });
         }
       }
     },
-    [limits, storage, patch, handleError],
+    [limits, patch, handleError],
   );
 
   const startSplit = useCallback(

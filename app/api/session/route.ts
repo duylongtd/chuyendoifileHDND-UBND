@@ -8,7 +8,7 @@ export const GET = route(
     return json({
       authed,
       storage: authed ? storageDriver() : undefined,
-      limits: { maxFiles: LIMITS.maxFilesPerBatch, maxFileMB: Math.floor(LIMITS.maxFileBytes / 1048576), retentionHours: LIMITS.retentionHours },
+      limits: { partBytes: LIMITS.partBytes, maxFiles: LIMITS.maxFilesPerBatch, maxFileMB: Math.floor(LIMITS.maxFileBytes / 1048576), retentionHours: LIMITS.retentionHours },
     });
   },
   { auth: false },

@@ -22,7 +22,9 @@ function localPath(p: string): string {
 export async function putObject(p: string, body: Buffer | string, contentType: string): Promise<void> {
   if (storageDriver() === "blob") {
     const { put } = await import("@vercel/blob");
-    await put(p, body, { access: blobAccess(), contentType, addRandomSuffix: false, allowOverwrite: true });
+    // File lớn (kết quả ~30 MB) tải theo nhiều phần cho ổn định
+    const multipart = typeof body !== "string" && body.length > 8 * 1024 * 1024;
+    await put(p, body, { access: blobAccess(), contentType, addRandomSuffix: false, allowOverwrite: true, multipart });
     return;
   }
   const full = localPath(p);
@@ -62,27 +64,6 @@ export async function getObjectStream(p: string): Promise<{ stream: ReadableStre
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw e;
   }
-}
-
-/** Ghi luồng tải lên vào đĩa (chỉ dùng cho driver local), dừng nếu vượt maxBytes. */
-export async function putLocalStream(p: string, body: ReadableStream<Uint8Array>, maxBytes: number): Promise<number> {
-  const full = localPath(p);
-  await fsp.mkdir(path.dirname(full), { recursive: true });
-  const out = fs.createWriteStream(full);
-  let size = 0;
-  try {
-    for await (const chunk of Readable.fromWeb(body as never)) {
-      size += (chunk as Buffer).length;
-      if (size > maxBytes) throw new Error("FILE_TOO_LARGE");
-      if (!out.write(chunk)) await new Promise((r) => out.once("drain", r));
-    }
-  } catch (e) {
-    out.destroy();
-    await fsp.rm(full, { force: true });
-    throw e;
-  }
-  await new Promise<void>((res, rej) => out.end((err?: Error | null) => (err ? rej(err) : res())));
-  return size;
 }
 
 export async function listObjects(prefix: string): Promise<StoredObject[]> {

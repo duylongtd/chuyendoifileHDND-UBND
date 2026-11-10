@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import type { Org } from "../xlsx/classify";
 import type { PositionInfo, SplitReport } from "../xlsx/split";
-import { deletePrefix, getObject, putObject } from "./storage";
+import { deleteObjects, deletePrefix, getObject, listObjects, putObject } from "./storage";
 
 export type JobStatus = "created" | "ready" | "queued" | "processing" | "done" | "error";
 
@@ -32,6 +32,8 @@ export function isJobId(id: string): boolean {
 export const jobPrefix = (id: string) => `jobs/${id}/`;
 export const jobFile = (id: string) => `jobs/${id}/job.json`;
 export const inputFile = (id: string) => `jobs/${id}/input.xlsx`;
+export const partsPrefix = (id: string) => `jobs/${id}/parts/`;
+export const partFile = (id: string, n: number) => `jobs/${id}/parts/${String(n).padStart(4, "0")}`;
 export const outputFile = (id: string, org: Org) => `jobs/${id}/${org.toLowerCase()}.xlsx`;
 
 export async function createJob(fileName: string, size: number): Promise<Job> {
@@ -59,4 +61,34 @@ export async function saveJob(job: Job): Promise<void> {
 
 export async function deleteJob(id: string): Promise<void> {
   if (isJobId(id)) await deletePrefix(jobPrefix(id));
+}
+
+export class AssembleError extends Error {}
+
+/**
+ * Ghép các phần đã tải lên thành jobs/<id>/input.xlsx (một lần), rồi xóa các phần.
+ * Trả về nội dung file; nếu đã ghép từ trước thì đọc lại file đã ghép.
+ */
+export async function assembleInput(id: string, expectedParts: number | undefined, maxBytes: number): Promise<Buffer | null> {
+  const existing = await getObject(inputFile(id));
+  if (existing) return existing;
+  const parts = (await listObjects(partsPrefix(id))).sort((a, b) => a.path.localeCompare(b.path));
+  if (!parts.length) return null;
+  if (expectedParts && parts.length !== expectedParts) {
+    throw new AssembleError(`File tải lên chưa đủ (nhận ${parts.length}/${expectedParts} phần). Hãy tải lại.`);
+  }
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].path !== partFile(id, i)) throw new AssembleError("File tải lên bị thiếu phần ở giữa. Hãy tải lại.");
+  }
+  if (parts.reduce((n, p) => n + p.size, 0) > maxBytes) throw new AssembleError(`File vượt ${Math.floor(maxBytes / 1048576)} MB.`);
+  const bufs: Buffer[] = [];
+  for (const p of parts) {
+    const b = await getObject(p.path);
+    if (!b) throw new AssembleError("Không đọc được một phần của file vừa tải lên. Hãy tải lại.");
+    bufs.push(b);
+  }
+  const whole = Buffer.concat(bufs);
+  await putObject(inputFile(id), whole, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  await deleteObjects(parts.map((p) => p.path)).catch(() => {});
+  return whole;
 }

@@ -5,6 +5,10 @@ export const LIMITS = {
   maxFilesPerBatch: 3,
   /** Dung lượng tối đa mỗi file (.xlsx) */
   maxFileBytes: 60 * 1024 * 1024,
+  /** File được tải lên theo từng phần: trình duyệt cắt 4 MB (Vercel giới hạn 4,5 MB mỗi request) */
+  partBytes: 4 * 1024 * 1024,
+  minPartBytes: 1024 * 1024,
+  maxPartBytes: 4.3 * 1024 * 1024,
   /** File và kết quả tự xóa sau số giờ này */
   retentionHours: 24,
   /** Số lần thử lại tối đa cho một tác vụ */
