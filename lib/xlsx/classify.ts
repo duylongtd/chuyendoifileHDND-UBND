@@ -20,10 +20,16 @@ export interface Suggestion {
   org: Org;
   /** false = cần người dùng xác nhận (tên trống / không rõ) */
   confident: boolean;
+  /** true = xếp UBND nhưng tên có nhắc HĐND: luôn hiện trong bảng xác nhận để người dùng soát */
+  related?: boolean;
   reason: string;
 }
 
 const HDND_WORD = /\b(hdnd|hoi dong nhan dan)\b/;
+const CT_HDND = /\b(pho )?chu tich (hdnd|hoi dong nhan dan)\b/;
+const CT_UBND = /\b(pho )?chu tich (ubnd|uy ban nhan dan)\b/;
+/** Vị trí tham mưu, giúp việc: dù tên có nhắc "Chủ tịch HĐND" cũng không phải chức danh HĐND */
+const STAFF = /^(chuyen vien|can su|nhan vien|van thu|ke toan|thu ky|giup viec|tro ly)\b/;
 
 /**
  * HĐND gồm đúng 4 chức danh: Chủ tịch HĐND, Phó Chủ tịch HĐND, Trưởng ban (của HĐND), Phó Trưởng ban (của HĐND).
@@ -32,11 +38,17 @@ const HDND_WORD = /\b(hdnd|hoi dong nhan dan)\b/;
 export function suggestOrg(name: string, hint = ""): Suggestion {
   const n = normalizeText(name);
   if (n) {
-    if (/^(pho )?chu tich\b/.test(n) && HDND_WORD.test(n) && !/\b(ubnd|uy ban nhan dan)\b/.test(n)) {
+    const staff = STAFF.test(n);
+    if (!staff && CT_HDND.test(n)) {
+      if (CT_UBND.test(n)) return { org: "UBND", confident: false, reason: "Tên vị trí ghi cả Chủ tịch HĐND và Chủ tịch UBND" };
+      // gồm cả dạng kiêm nhiệm: "Bí thư Đảng ủy, Chủ tịch HĐND xã"
       return { org: "HDND", confident: true, reason: "Chức danh Chủ tịch/Phó Chủ tịch HĐND" };
     }
     if (/^(pho )?truong ban\b/.test(n) && !/\bban (chi huy|quan ly|chi dao)\b/.test(n)) {
       return { org: "HDND", confident: true, reason: "Chức danh Trưởng ban/Phó Trưởng ban của HĐND" };
+    }
+    if (HDND_WORD.test(n)) {
+      return { org: "UBND", confident: true, related: true, reason: "Tên có nhắc HĐND nhưng không thuộc 4 chức danh HĐND nên xếp UBND" };
     }
     return { org: "UBND", confident: true, reason: "Không thuộc 4 chức danh HĐND" };
   }

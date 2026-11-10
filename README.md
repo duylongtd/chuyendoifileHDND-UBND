@@ -41,6 +41,8 @@ Sau khi tách:
 | Dung lượng mỗi file | 60 MB |
 | Thời gian lưu file trên máy chủ | 24 giờ (tự xóa) |
 | Số lần tự thử lại khi lỗi hệ thống | 3 |
+| Số file tối đa mỗi địa chỉ IP tạo trong 10 phút | 90 |
+| Kích thước một trang tính sau giải nén | 300 MB (cả file: 1,2 GB) |
 
 Sửa trong [`lib/server/config.ts`](lib/server/config.ts).
 
@@ -66,7 +68,7 @@ Trình duyệt ──(từng phần 4 MB)──▶ /api/jobs/:id/upload ──�
 - **Cron** hằng ngày xóa tác vụ quá 24 giờ.
 - **Bộ tách** ([`lib/xlsx`](lib/xlsx)) làm việc trực tiếp trên XML bên trong `.xlsx`, không dựng cả workbook trong bộ nhớ: file 37 MB (424 MB sau giải nén, 1,26 triệu công thức) tách xong trong vài giây. Các thành phần không thay đổi được chép nguyên dạng nén.
 
-Xử lý lỗi: sai định dạng, file `.xls`, file đặt mật khẩu, file hỏng, không phải bộ biểu VTVL, không có vị trí HĐND, quá dung lượng, quá số file, "bom nén" (giới hạn 1,5 GB sau giải nén), hết phiên đăng nhập, tác vụ treo (hiện nút "Chạy lại").
+Xử lý lỗi: sai định dạng, file `.xls`, file đặt mật khẩu, file hỏng, không phải bộ biểu VTVL, không có vị trí HĐND, quá dung lượng, quá số file, "bom nén", XML dị dạng, file do phần mềm khác lưu sai chuẩn, hết phiên đăng nhập, tác vụ treo (hiện nút "Chạy lại").
 
 ## Chạy trên máy
 
@@ -107,6 +109,21 @@ Thiếu cấu hình bắt buộc (`ACCESS_CODE`, Blob, `CRON_SECRET`) thì API t
 - Vào trang phải có mã truy cập; phiên đăng nhập là cookie `httpOnly` ký HMAC, hết hạn sau 12 giờ; nhập sai quá 10 lần/10 phút bị khóa tạm.
 - File lưu ở Blob **private**, đường dẫn chứa mã ngẫu nhiên (UUID), chỉ tải được qua API đã đăng nhập, tự xóa sau 24 giờ. Người dùng có thể bấm "Xóa" để xóa ngay.
 - Không đưa file bộ biểu hay `.env` lên repo (đã chặn trong `.gitignore`).
+
+## Kiểm thử
+
+```bash
+npm test                                   # quy tắc: dịch công thức, nhận diện chức danh, tên file
+ACCESS_CODE=... python scripts/e2e_test.py # đầu-cuối với server đang chạy (cần: pip install openpyxl)
+ACCESS_CODE=... python scripts/e2e_test.py --sample duong-dan/file-that.xlsx   # thêm nhóm tải nặng
+```
+
+`scripts/e2e_test.py` gồm 98 ca, chia 9 nhóm: xác thực (cookie giả, dò mã), tạo tác vụ (dữ liệu sai, tên file nguy hiểm, chặn tạo dồn dập),
+tải lên từng phần, toàn vẹn (SHA-256, kích thước, số phần), file lạ/hỏng/độc hại (bom nén, XML dị dạng 300.000 thẻ, file phần mềm khác lưu),
+quy tắc tách và dữ liệu biên (mã lạ, dòng thiếu mã, dòng trống xen giữa, mã trùng, ô gộp, thiếu biểu), trạng thái tác vụ
+(bấm Tách nhiều lần, xóa giữa chừng), tải nặng đồng thời (6 file 35 MB cùng lúc) và dọn file.
+
+Theo dõi vận hành: `GET /api/health` (cần đăng nhập) trả về kho lưu trữ, kiểu hàng đợi đang dùng và bộ nhớ của instance.
 
 ## Kiểm chứng kết quả
 

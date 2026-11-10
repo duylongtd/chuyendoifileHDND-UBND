@@ -26,7 +26,9 @@ const SIG_CEN = 0x02014b50;
 const SIG_LOC = 0x04034b50;
 
 /** Giới hạn tổng dung lượng sau giải nén để chống "bom nén". */
-export const MAX_TOTAL_UNCOMPRESSED = 1.5 * 1024 * 1024 * 1024;
+export const MAX_TOTAL_UNCOMPRESSED = 1.2 * 1024 * 1024 * 1024;
+/** Một thành phần (một sheet) sau giải nén không quá mức này; bộ biểu thật lớn nhất ~80 MB */
+export const MAX_ENTRY_UNCOMPRESSED = 300 * 1024 * 1024;
 export const MAX_ENTRIES = 2000;
 
 export function readZip(buf: Buffer): ZipEntry[] {
@@ -76,6 +78,7 @@ export function readZip(buf: Buffer): ZipEntry[] {
     const locExtraLen = buf.readUInt16LE(locOffset + 28);
     const dataStart = locOffset + 30 + locNameLen + locExtraLen;
     if (dataStart + compressedSize > buf.length) throw new ZipError("File bị cắt cụt hoặc hỏng.");
+    if (uncompressedSize > MAX_ENTRY_UNCOMPRESSED) throw new ZipError("File sau giải nén quá lớn, vượt giới hạn cho phép.");
     total += uncompressedSize;
     if (total > MAX_TOTAL_UNCOMPRESSED) throw new ZipError("File sau giải nén quá lớn, vượt giới hạn cho phép.");
 

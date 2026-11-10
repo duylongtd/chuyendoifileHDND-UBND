@@ -54,8 +54,59 @@ export interface SheetModel {
   lastData: number;
 }
 
-const ROW_RE = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g;
-const CELL_RE = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+interface El {
+  start: number;
+  end: number;
+  /** Phần thuộc tính của thẻ mở (kể cả khoảng trắng đầu) */
+  attrs: string;
+  inner: string;
+}
+
+/**
+ * Duyệt lần lượt các phần tử <tag ...>...</tag> (hoặc <tag .../>) cùng cấp trong chuỗi XML.
+ * Dùng indexOf nên thời gian luôn tuyến tính theo độ dài chuỗi, kể cả khi XML dị dạng
+ * (regex kiểu <c ...>[\s\S]*?</c> sẽ quét lại từ đầu cho mỗi thẻ không đóng -> treo máy chủ).
+ * strict = true: gặp thẻ không đóng / lồng nhau thì báo lỗi; false: dừng lại (dùng khi chuỗi là một đoạn cắt dở).
+ */
+function scanElements(xml: string, tag: "row" | "c", strict: boolean, fn: (el: El) => boolean | void): void {
+  const open = `<${tag}`;
+  const close = `</${tag}>`;
+  const isOpenAt = (i: number) => {
+    const ch = xml.charCodeAt(i + open.length);
+    return ch === 32 || ch === 62 || ch === 47 || ch === 9 || ch === 10 || ch === 13; // khoảng trắng, ">", "/"
+  };
+  const nextOpen = (from: number, to: number) => {
+    let i = xml.indexOf(open, from);
+    while (i >= 0 && i < to && !isOpenAt(i)) i = xml.indexOf(open, i + open.length);
+    return i >= 0 && i < to ? i : -1;
+  };
+  const malformed = () => new SheetFormatError("XML của trang tính bị lỗi (thẻ không đóng hoặc lồng nhau). File có thể đã hỏng; hãy mở bằng Excel, bấm Lưu rồi tải lên lại.");
+  let pos = 0;
+  for (;;) {
+    const i = nextOpen(pos, xml.length);
+    if (i < 0) return;
+    const gt = xml.indexOf(">", i);
+    if (gt < 0) {
+      if (strict) throw malformed();
+      return;
+    }
+    let el: El;
+    if (xml.charCodeAt(gt - 1) === 47) {
+      el = { start: i, end: gt + 1, attrs: xml.slice(i + open.length, gt - 1), inner: "" };
+    } else {
+      const c = xml.indexOf(close, gt);
+      if (c < 0) {
+        if (strict) throw malformed();
+        return;
+      }
+      if (nextOpen(gt, c) >= 0) throw malformed();
+      el = { start: i, end: c + close.length, attrs: xml.slice(i + open.length, gt), inner: xml.slice(gt + 1, c) };
+    }
+    if (fn(el) === false) return;
+    pos = el.end;
+  }
+}
+
 const F_RE = /^<f\b([^>]*?)(?:\/>|>([\s\S]*?)<\/f>)/;
 
 function parseRef(ref: string): { endRow: number; endCol: string; single: boolean } {
@@ -68,11 +119,7 @@ function parseRef(ref: string): { endRow: number; endCol: string; single: boolea
 
 function parseRowCells(rowNum: number, inner: string, groups: Map<string, SharedGroup>, inRegion: boolean): MCell[] {
   const cells: MCell[] = [];
-  CELL_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = CELL_RE.exec(inner))) {
-    const attrs = m[1];
-    const body = m[2] ?? "";
+  scanElements(inner, "c", true, ({ attrs, inner: body }) => {
     const ref = getAttr(`<c${attrs}>`, "r");
     const rm = ref?.match(/^([A-Z]+)(\d+)$/);
     if (!rm) throw new SheetFormatError("Ô thiếu địa chỉ (thuộc tính r), cấu trúc file không được hỗ trợ.");
@@ -113,7 +160,7 @@ function parseRowCells(rowNum: number, inner: string, groups: Map<string, Shared
       }
     }
     cells.push(cell);
-  }
+  });
   return cells;
 }
 
@@ -160,6 +207,7 @@ function findLastDataRow(buf: Buffer, keyCol: string, from: number, to: number):
   // (b) ô mã ở cột khóa có giá trị (mã do công thức trả về)
   const keyPat = `<c r="${keyCol}`;
   let pos = to;
+  let closeLimit = to; // sau vị trí này chắc chắn không còn </c> nào (tránh quét lặp khi XML dị dạng)
   while (pos > from) {
     const cs = buf.lastIndexOf(keyPat, pos - 1, "latin1");
     if (cs < from) break;
@@ -169,8 +217,12 @@ function findLastDataRow(buf: Buffer, keyCol: string, from: number, to: number):
     if (ref.row <= last) break;
     const tagEnd = buf.indexOf(0x3e, cs); // ">"
     if (tagEnd < 0 || buf[tagEnd - 1] === 0x2f) continue; // <c .../> rỗng
-    const cellEnd = buf.indexOf("</c>", tagEnd, "latin1");
-    if (cellEnd < 0) continue;
+    const rel = tagEnd < closeLimit ? buf.subarray(tagEnd, closeLimit).indexOf("</c>", 0, "latin1") : -1;
+    if (rel < 0) {
+      closeLimit = cs;
+      continue;
+    }
+    const cellEnd = tagEnd + rel;
     // Chỉ tìm <v> TRONG phạm vi ô này (tìm không giới hạn sẽ quét tới tận ô có giá trị kế tiếp, rất chậm)
     const body = buf.toString("latin1", tagEnd + 1, cellEnd);
     const v = body.match(/<v>([^<]+)<\/v>/);
@@ -196,6 +248,12 @@ function locate(buf: Buffer, keyCol: string): Located | null {
   if (sd < 0) return null;
   const sdEnd = buf.indexOf("</sheetData>", sd, "latin1");
   if (sdEnd < 0) return null; // <sheetData/> rỗng
+  // Bộ dò dựa vào dạng <c r="A1" ...> (Excel, openpyxl, LibreOffice đều ghi r trước).
+  // Nếu file ghi thuộc tính theo thứ tự khác thì dừng, không âm thầm bỏ qua việc tách sheet này.
+  const firstCell = buf.indexOf("<c ", sd, "latin1");
+  if (firstCell >= 0 && firstCell < sdEnd && buf.toString("latin1", firstCell, firstCell + 6) !== '<c r="') {
+    throw new SheetFormatError("File do phần mềm khác lưu theo định dạng chưa hỗ trợ. Hãy mở bằng Excel, bấm Lưu rồi tải lên lại.");
+  }
   const lastData = findLastDataRow(buf, keyCol, sd, sdEnd);
   if (lastData < DATA_START_ROW) return null;
 
@@ -220,13 +278,11 @@ function locate(buf: Buffer, keyCol: string): Located | null {
 }
 
 function eachRow(xml: string, fn: (num: number, attrs: string, inner: string) => void): void {
-  const re = new RegExp(ROW_RE.source, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) {
-    const num = Number(getAttr(`<row${m[1]}>`, "r"));
+  scanElements(xml, "row", true, ({ attrs, inner }) => {
+    const num = Number(getAttr(`<row${attrs}>`, "r"));
     if (!Number.isInteger(num)) throw new SheetFormatError("Dòng thiếu số thứ tự (thuộc tính r), cấu trúc file không được hỗ trợ.");
-    fn(num, m[1], m[2] ?? "");
-  }
+    fn(num, attrs, inner);
+  });
 }
 
 /**
@@ -273,47 +329,55 @@ function fixTail(tail: Buffer, groups: Map<string, SharedGroup>, lastData: numbe
     let consumed = 0;
     let open = pending.size;
     let done = false;
-    const rowRe = new RegExp(ROW_RE.source, "g");
-    let m: RegExpExecArray | null;
-    while ((m = rowRe.exec(text))) {
-      const num = Number(getAttr(`<row${m[1]}>`, "r"));
+    // Trả về XML mới của ô nếu ô này là ô phụ thuộc của một nhóm đang chờ; null nếu giữ nguyên
+    const remasterCell = (attrs: string, body: string): string | null => {
+      if (!body.startsWith("<f")) return null;
+      const fm = body.match(F_RE);
+      if (!fm || (fm[2] ?? "") !== "") return null;
+      const fTag = `<f${fm[1]}>`;
+      if (getAttr(fTag, "t") !== "shared") return null;
+      const g = pending.get(getAttr(fTag, "si") ?? "");
+      if (!g) return null;
+      const rm = (getAttr(`<c${attrs}>`, "r") ?? "").match(/^([A-Z]+)(\d+)$/);
+      if (!rm) return null;
+      const formula = escapeFormula(translateFormula(g.text, Number(rm[2]) - g.row, colToIndex(rm[1]) - g.colIdx));
+      const rest = body.slice(fm[0].length);
+      if (g.singleColumn) {
+        if (g.remastered) return null;
+        g.remastered = true;
+        open--;
+        const newF = setAttr(fTag, "ref", `${rm[1]}${rm[2]}:${g.endCol}${g.endRow}`).slice(0, -1);
+        return `<c${attrs}>${newF}>${formula}</f>${rest}</c>`;
+      }
+      const plain = removeAttr(removeAttr(removeAttr(fTag, "t"), "si"), "ref").slice(0, -1);
+      return `<c${attrs}>${plain}>${formula}</f>${rest}</c>`;
+    };
+    scanElements(text, "row", false, (row) => {
+      const num = Number(getAttr(`<row${row.attrs}>`, "r"));
       if (num > maxEnd) {
         done = true;
-        break;
+        return false;
       }
-      let rowStr = m[0];
+      let rowStr = text.slice(row.start, row.end);
       if (rowStr.includes('t="shared"')) {
-        rowStr = rowStr.replace(new RegExp(CELL_RE.source, "g"), (raw: string, attrs: string, body: string | undefined) => {
-          if (!body || !body.startsWith("<f")) return raw;
-          const fm = body.match(F_RE);
-          if (!fm || (fm[2] ?? "") !== "") return raw;
-          const fTag = `<f${fm[1]}>`;
-          if (getAttr(fTag, "t") !== "shared") return raw;
-          const g = pending.get(getAttr(fTag, "si") ?? "");
-          if (!g) return raw;
-          const ref = getAttr(`<c${attrs}>`, "r") ?? "";
-          const rm = ref.match(/^([A-Z]+)(\d+)$/);
-          if (!rm) return raw;
-          const formula = escapeFormula(translateFormula(g.text, Number(rm[2]) - g.row, colToIndex(rm[1]) - g.colIdx));
-          const rest = body.slice(fm[0].length);
-          if (g.singleColumn) {
-            if (g.remastered) return raw;
-            g.remastered = true;
-            open--;
-            const newF = setAttr(fTag, "ref", `${rm[1]}${rm[2]}:${g.endCol}${g.endRow}`).slice(0, -1);
-            return `<c${attrs}>${newF}>${formula}</f>${rest}</c>`;
+        const pieces: string[] = [];
+        let last = 0;
+        scanElements(rowStr, "c", true, (c) => {
+          const fixed = remasterCell(c.attrs, c.inner);
+          if (fixed !== null) {
+            pieces.push(rowStr.slice(last, c.start), fixed);
+            last = c.end;
           }
-          const plain = removeAttr(removeAttr(removeAttr(fTag, "t"), "si"), "ref").slice(0, -1);
-          return `<c${attrs}>${plain}>${formula}</f>${rest}</c>`;
         });
+        if (pieces.length) rowStr = pieces.join("") + rowStr.slice(last);
       }
-      out.push(text.slice(consumed, m.index), rowStr);
-      consumed = rowRe.lastIndex;
+      out.push(text.slice(consumed, row.start), rowStr);
+      consumed = row.end;
       if (open === 0 && onlySingle) {
         done = true;
-        break;
+        return false;
       }
-    }
+    });
     if (done || whole) return [Buffer.from(out.join(""), "latin1"), tail.subarray(consumed)];
   }
 }

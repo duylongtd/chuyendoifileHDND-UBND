@@ -13,7 +13,7 @@ export const PUT = route(async (req: Request, ctx: Ctx) => {
   const url = new URL(req.url);
   const part = Number(url.searchParams.get("part"));
   const total = Number(url.searchParams.get("total"));
-  const maxParts = Math.ceil(LIMITS.maxFileBytes / LIMITS.minPartBytes);
+  const maxParts = Math.ceil(LIMITS.maxFileBytes / LIMITS.partBytes);
   if (!Number.isInteger(part) || !Number.isInteger(total) || total < 1 || total > maxParts || part < 0 || part >= total) {
     return fail(400, "BAD_PART", "Thông tin phần tải lên không hợp lệ.");
   }

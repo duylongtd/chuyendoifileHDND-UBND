@@ -35,6 +35,6 @@ export const POST = route(async (req: Request, ctx: Ctx) => {
   job.outputs = undefined;
   if (stale || job.attempts >= LIMITS.maxAttempts) job.attempts = 0;
   await saveJob(job);
-  job.queuedVia = await enqueue(job.id, Date.now());
+  job.queuedVia = await enqueue(job.id, Date.now(), stale);
   return json({ job });
 });

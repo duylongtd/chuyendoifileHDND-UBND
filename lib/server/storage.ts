@@ -1,4 +1,5 @@
 // Lớp lưu trữ file: Vercel Blob (private) khi deploy, thư mục .data/ khi chạy trên máy.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -29,7 +30,8 @@ export async function putObject(p: string, body: Buffer | string, contentType: s
   }
   const full = localPath(p);
   await fsp.mkdir(path.dirname(full), { recursive: true });
-  const tmp = `${full}.${process.pid}.${Date.now()}.tmp`;
+  // Tên file tạm phải duy nhất: nhiều yêu cầu có thể ghi cùng một file trong cùng mili-giây
+  const tmp = `${full}.${crypto.randomUUID()}.tmp`;
   await fsp.writeFile(tmp, body);
   await fsp.rename(tmp, full);
 }

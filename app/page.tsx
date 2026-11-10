@@ -523,7 +523,7 @@ function FileCard({ it, now, patch, onSplit, onRemove }: { it: Item; now: number
   const nFlag = positions.filter((p) => !p.confident).length;
   const age = job ? now - job.updatedAt : 0;
   const stale = (it.phase === "queued" && age > STALE_QUEUED_MS) || (it.phase === "processing" && age > STALE_PROCESSING_MS);
-  const visible = it.showAll ? positions : positions.filter((p) => it.mapping[p.code] === "HDND" || !p.confident);
+  const visible = it.showAll ? positions : positions.filter((p) => it.mapping[p.code] === "HDND" || !p.confident || p.related);
   const canRemove = it.phase !== "uploading" && it.phase !== "inspecting";
 
   return (
@@ -580,6 +580,7 @@ function FileCard({ it, now, patch, onSplit, onRemove }: { it: Item; now: number
                     <td className="code">{p.code}</td>
                     <td>
                       {p.name || <em className="muted">(Tên vị trí để trống)</em>}
+                      {p.confident && p.related && <div className="hint">{p.reason}.</div>}
                       {!p.confident && (
                         <div className="hint">
                           {p.reason}.{p.hint ? ` Mô tả ở biểu C2: “${p.hint.slice(0, 160)}${p.hint.length > 160 ? "…" : ""}”` : ""}
@@ -615,7 +616,7 @@ function FileCard({ it, now, patch, onSplit, onRemove }: { it: Item; now: number
           </div>
           <div className="row between" style={{ marginTop: 12 }}>
             <button className="btn sm" onClick={() => patch(it.key, { showAll: !it.showAll })}>
-              {it.showAll ? "Chỉ hiện vị trí HĐND và vị trí cần xem lại" : `Hiện tất cả ${positions.length} vị trí`}
+              {it.showAll ? "Chỉ hiện vị trí HĐND và vị trí liên quan" : `Hiện tất cả ${positions.length} vị trí`}
             </button>
             <button className="btn primary" onClick={onSplit} disabled={nH === 0 || nH === positions.length}>
               Tách thành 2 file

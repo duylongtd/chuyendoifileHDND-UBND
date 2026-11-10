@@ -2,12 +2,16 @@
 import { LIMITS } from "@/lib/server/config";
 import { fail, json, route } from "@/lib/server/http";
 import { AssembleError, loadJob, readInput, saveJob } from "@/lib/server/jobs";
+import { runExclusive } from "@/lib/server/worker";
 import { inspectWorkbook, SplitError } from "@/lib/xlsx/split";
 
 export const maxDuration = 120;
 type Ctx = { params: Promise<{ id: string }> };
 
-export const POST = route(async (req: Request, ctx: Ctx) => {
+// Đọc file (vài chục MB) theo hàng cùng với việc tách, để nhiều người dùng cùng lúc không làm tràn bộ nhớ
+export const POST = route((req: Request, ctx: Ctx) => runExclusive(() => inspect(req, ctx)));
+
+async function inspect(req: Request, ctx: Ctx): Promise<Response> {
   const job = await loadJob((await ctx.params).id);
   if (!job) return fail(404, "NOT_FOUND", "Không tìm thấy tác vụ (có thể đã hết hạn 24 giờ).");
   if (job.status !== "created" && job.status !== "ready" && job.status !== "error") return json({ job });
@@ -47,4 +51,4 @@ export const POST = route(async (req: Request, ctx: Ctx) => {
     if (e instanceof SplitError) return reject(e.code, e.message);
     throw e;
   }
-});
+}

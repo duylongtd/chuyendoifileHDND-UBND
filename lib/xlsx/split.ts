@@ -22,6 +22,8 @@ export interface PositionInfo {
   row: number;
   suggested: Org;
   confident: boolean;
+  /** Xếp UBND nhưng tên có nhắc HĐND: luôn hiện để người dùng soát */
+  related?: boolean;
   reason: string;
   /** Trích mô tả ở biểu C2 (giúp người dùng xác nhận khi tên trống) */
   hint: string;
@@ -130,7 +132,7 @@ export async function inspectWorkbook(buf: Buffer): Promise<InspectResult> {
     const name = mcellText(cellOf(r, "B"), wb.shared);
     const hint = hints.get(code) ?? "";
     const s: Suggestion = suggestOrg(name, hint);
-    positions.push({ code, name, row: r.num, suggested: s.org, confident: s.confident, reason: s.reason, hint: hint.slice(0, 220) });
+    positions.push({ code, name, row: r.num, suggested: s.org, confident: s.confident, related: s.related, reason: s.reason, hint: hint.slice(0, 220) });
   }
   if (!positions.length) throw new SplitError("NOT_VTVL", 'Biểu "6. C1_VTVL" chưa có vị trí việc làm nào (từ dòng 3).');
   const have = new Set(wb.sheets.map((s) => s.spec?.role).filter(Boolean));
@@ -277,6 +279,14 @@ export async function splitWorkbook(buf: Buffer, mapping: Record<string, Org>): 
       out.UBND.push(p);
       continue;
     }
+    // Ô gộp nằm trong vùng dữ liệu không dồn theo dòng được -> báo để người dùng kiểm tra lại
+    const afterData = raw.toString("latin1", Math.max(0, raw.lastIndexOf("</sheetData>")));
+    const merged = [...afterData.matchAll(/<mergeCell ref="[A-Z]+(\d+)(?::[A-Z]+(\d+))?"/g)].filter((m) => {
+      const r1 = Number(m[1]);
+      const r2 = Number(m[2] ?? m[1]);
+      return r2 >= DATA_START_ROW && r1 <= model.lastData;
+    });
+    if (merged.length) warn(ctx, `Biểu ${sheet.name}: có ${merged.length} ô gộp trong vùng dữ liệu, ô gộp không dồn theo dòng → cần kiểm tra lại biểu này ở cả hai file`);
     const orgs = new Map<number, RowOrg | null>();
     const rep: SheetReport = { sheet: sheet.name, total: 0, hdnd: 0, ubnd: 0, both: 0 };
     for (const r of model.rows) {

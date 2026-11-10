@@ -26,7 +26,8 @@ export const POST = route(async (req: Request) => {
     if (typeof v === "string") return fail(400, "INVALID_FILE", v);
     valid.push(v);
   }
-  if (!rateLimit(`create:${clientIp(req)}`, 30, 10 * 60 * 1000, valid.length)) {
+  // Giới hạn theo IP: một cơ quan thường dùng chung một IP ra Internet nên để rộng (90 file / 10 phút)
+  if (!rateLimit(`create:${clientIp(req)}`, LIMITS.maxFilesPer10MinPerIp, 10 * 60 * 1000, valid.length)) {
     return fail(429, "TOO_MANY", "Bạn đang tải lên quá nhiều file. Hãy chờ vài phút rồi thử lại.");
   }
   const jobs = [];

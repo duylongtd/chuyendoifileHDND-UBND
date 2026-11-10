@@ -2,8 +2,8 @@
 import { Org, outputFileName } from "../xlsx/classify";
 import { SplitError, splitWorkbook } from "../xlsx/split";
 import { LIMITS, XLSX_MIME } from "./config";
-import { AssembleError, loadJob, outputFile, readInput, saveJob } from "./jobs";
-import { putObject } from "./storage";
+import { AssembleError, jobPrefix, loadJob, outputFile, readInput, saveJob } from "./jobs";
+import { deletePrefix, putObject } from "./storage";
 
 /** Ném ra khi cần hàng đợi giao lại thông điệp sau (không phải lỗi dữ liệu). */
 export class RetryLater extends Error {}
@@ -12,10 +12,15 @@ export class RetryLater extends Error {}
 // chạy song song trong cùng instance dễ tràn bộ nhớ. Các tác vụ khác xếp hàng trong tiến trình.
 let chain: Promise<unknown> = Promise.resolve();
 
-export function processJob(id: string): Promise<void> {
-  const run = chain.then(() => doProcess(id));
+/** Chạy một việc nặng về bộ nhớ theo hàng: mỗi instance chỉ làm một việc một lúc. */
+export function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const run = chain.then(fn);
   chain = run.catch(() => {});
   return run;
+}
+
+export function processJob(id: string): Promise<void> {
+  return runExclusive(() => doProcess(id));
 }
 
 async function doProcess(id: string): Promise<void> {
@@ -54,7 +59,12 @@ async function doProcess(id: string): Promise<void> {
     const orgs = ["HDND", "UBND"] as Org[];
     await Promise.all(orgs.map((org) => putObject(outputFile(id, org), result.files[org], XLSX_MIME)));
     for (const org of orgs) outputs[org] = { name: outputFileName(job.fileName, org), size: result.files[org].length };
-    const latest = (await loadJob(id)) ?? job;
+    const latest = await loadJob(id);
+    if (!latest) {
+      // Người dùng đã xóa tác vụ trong lúc đang tách: dọn file kết quả vừa ghi, không tạo lại tác vụ
+      await deletePrefix(jobPrefix(id));
+      return;
+    }
     latest.status = "done";
     latest.attempts = job.attempts;
     latest.outputs = outputs;

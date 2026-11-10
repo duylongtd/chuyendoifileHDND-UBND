@@ -20,8 +20,8 @@ async function runInline(jobId: string): Promise<void> {
   }
 }
 
-export async function enqueue(jobId: string, attempt: number): Promise<"vercel" | "inline"> {
-  if (queueDriver() === "vercel") {
+export async function enqueue(jobId: string, attempt: number, forceInline = false): Promise<"vercel" | "inline"> {
+  if (!forceInline && queueDriver() === "vercel") {
     try {
       const { send } = await import("@vercel/queue");
       await send<QueueMessage>(QUEUE_TOPIC, { jobId }, { idempotencyKey: `${jobId}:${attempt}`, retentionSeconds: 3600 });
