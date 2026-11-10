@@ -45,8 +45,8 @@ export function blobAccess(): "private" | "public" {
 
 export function accessCode(): string {
   const code = process.env.ACCESS_CODE;
-  if (!code || code.length < 8) {
-    throw new ConfigError("Chưa cấu hình biến môi trường ACCESS_CODE (mã truy cập, tối thiểu 8 ký tự).");
+  if (!code) {
+    throw new ConfigError("Chưa cấu hình biến môi trường ACCESS_CODE (mã truy cập).");
   }
   return code;
 }

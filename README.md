@@ -70,7 +70,7 @@ Xử lý lỗi: sai định dạng, file `.xls`, file đặt mật khẩu, file 
 
 ```bash
 npm install
-cp .env.example .env.local   # rồi điền ACCESS_CODE (tối thiểu 8 ký tự)
+cp .env.example .env.local   # rồi điền ACCESS_CODE
 npm run dev                  # http://localhost:3600
 ```
 
@@ -87,7 +87,7 @@ npm run split -- "duong-dan/file.xlsx" thu-muc-ket-qua
 1. **Import repo** vào Vercel (Framework: Next.js, không cần chỉnh build).
 2. **Storage → Create → Blob**, chọn access **Private**, rồi **Connect** vào project (Vercel tự thêm biến môi trường của Blob).
 3. **Settings → Environment Variables**, thêm:
-   - `ACCESS_CODE`: mã truy cập chung, tối thiểu 8 ký tự.
+   - `ACCESS_CODE`: mã truy cập chung do bạn tự đặt.
    - `SESSION_SECRET`: chuỗi ngẫu nhiên (ví dụ tạo bằng `openssl rand -hex 32`).
    - `CRON_SECRET`: chuỗi ngẫu nhiên, để chỉ Vercel Cron gọi được đường dẫn dọn file.
 4. **Redeploy** để nhận biến môi trường.
